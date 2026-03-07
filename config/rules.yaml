@@ -1,0 +1,10 @@
+wifi_rules:
+  - id: ssid_spoof_suspect
+    enabled: true
+    description: "SSID not in corporate whitelist"
+    severity: 3
+    confidence: 0.8
+    conditions:
+      - field: SSID
+        op: not_contains
+        value: "CorpNet"
