@@ -13,6 +13,8 @@ logger = get_logger(__name__)
 
 
 class WiFiSensor(BaseSensor):
+    """Polls `termux-wifi-scaninfo` and tracks newly-seen BSSIDs."""
+
     def __init__(self, sensor_id: str, config: dict):
         super().__init__(sensor_id, "wifi", config)
         self._interval = config.get("scan_interval", 30)

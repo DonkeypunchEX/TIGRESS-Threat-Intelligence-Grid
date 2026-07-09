@@ -8,7 +8,6 @@ pytest.importorskip("cryptography")
 from src.security.audit_log import AuditLog
 from src.security.secure_config import SecureConfig, SecurityError
 
-
 # --------------------------------------------------------------------------- #
 # AuditLog: tamper-evident, ECDSA-signed, hash-chained log
 # --------------------------------------------------------------------------- #

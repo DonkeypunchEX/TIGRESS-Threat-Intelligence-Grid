@@ -1,7 +1,7 @@
 import time
 
-from src.sensors.dummy_sensor import DummySensor
 from src.core.sensor_manager import SensorManager
+from src.sensors.dummy_sensor import DummySensor
 
 
 def test_record_notifies_subscribers():

@@ -15,6 +15,8 @@ logger = get_logger(__name__)
 
 
 class PhoneSensor(BaseSensor):
+    """Samples an accelerometer via `termux-sensor` to detect physical tamper."""
+
     def __init__(self, sensor_id: str, config: dict):
         super().__init__(sensor_id, "phone", config)
         self._sensor_type = config.get("sensor_type", "accelerometer")

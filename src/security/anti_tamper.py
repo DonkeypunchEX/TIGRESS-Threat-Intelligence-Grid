@@ -58,6 +58,29 @@ class RuntimeProtection:
             pass
         return True
 
+    def verify_processes(self) -> bool:
+        """Check running process names against the whitelist.
+
+        Returns ``True`` when every running process is whitelisted. Any
+        non-whitelisted process is appended to ``self.violations``. Process
+        names are inherently noisy, so this check is exposed for callers to use
+        deliberately and is not wired into the auto-alarm loop by default.
+        """
+        try:
+            names = {
+                p.info["name"]
+                for p in psutil.process_iter(["name"])
+                if p.info.get("name")
+            }
+        except Exception as e:  # psutil unavailable or permission denied
+            logger.debug(f"Process enumeration failed: {e}")
+            return True
+
+        unexpected = names - self.PROCESS_WHITELIST
+        for name in sorted(unexpected):
+            self.violations.append(f"Non-whitelisted process: {name}")
+        return not unexpected
+
     def start_monitoring(self, interval: int = 30):
         self._running = True
         self._thread = threading.Thread(target=self._loop, args=(interval,), daemon=True)

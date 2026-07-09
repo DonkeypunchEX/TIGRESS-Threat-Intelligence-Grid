@@ -1,3 +1,5 @@
+"""Sensor lifecycle manager: starts sensors and routes readings to detection."""
+
 import threading
 from typing import Callable, Dict, List
 
@@ -18,6 +20,8 @@ SENSOR_REGISTRY = {
 
 
 class SensorManager:
+    """Starts/stops configured sensors and feeds their data to the engine."""
+
     def __init__(
         self,
         config_path: str = "config/config.yaml",
@@ -33,6 +37,7 @@ class SensorManager:
         self.detection_engine = DetectionEngine(config_path, training_mode=training)
 
     def start_all(self):
+        """Connect and start every enabled sensor."""
         cfg = self.config.get("sensors", {})
         for stype in cfg.get("enabled", []):
             scfg = cfg.get(stype, {})
@@ -59,6 +64,7 @@ class SensorManager:
         logger.info(f"Started {len(self._sensors)} sensor(s): {list(self._sensors)}")
 
     def stop_all(self):
+        """Stop and disconnect all running sensors."""
         for sensor in self._sensors.values():
             try:
                 sensor.stop_recording()
@@ -69,10 +75,12 @@ class SensorManager:
         logger.info("All sensors stopped")
 
     def subscribe_global(self, cb: Callable):
+        """Register a callback invoked for every reading from any sensor."""
         with self._lock:
             self._global_subs.append(cb)
 
     def list_sensors(self) -> List[dict]:
+        """Return status dicts for all managed sensors."""
         return [s.get_status() for s in self._sensors.values()]
 
     @property

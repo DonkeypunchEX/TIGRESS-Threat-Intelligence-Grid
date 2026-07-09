@@ -1,8 +1,12 @@
+"""Abstract sensor base class with a bounded reading buffer."""
+
 from abc import ABC, abstractmethod
 from typing import Callable, List
 
 
 class BaseSensor(ABC):
+    """Base for all sensors: manages the reading buffer and subscribers."""
+
     #: Maximum number of recent readings kept in memory per sensor.
     DEFAULT_BUFFER_LIMIT = 1000
 
@@ -29,6 +33,7 @@ class BaseSensor(ABC):
     def stop_recording(self): ...
 
     def subscribe(self, callback: Callable):
+        """Register a callback invoked with each new reading."""
         self._subscribers.append(callback)
 
     def record(self, data: dict):
@@ -47,9 +52,11 @@ class BaseSensor(ABC):
                 pass
 
     def get_buffer(self) -> List[dict]:
+        """Return the current in-memory buffer of recent readings."""
         return self.data_buffer
 
     def get_status(self) -> dict:
+        """Return a status snapshot (id, type, state, buffer size)."""
         return {
             "id": self.sensor_id,
             "type": self.sensor_type,

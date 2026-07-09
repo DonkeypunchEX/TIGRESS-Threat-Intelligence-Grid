@@ -1,3 +1,10 @@
+"""Detection engine: rule-based and Isolation Forest anomaly detection.
+
+Combines per-reading YAML rules with an unsupervised ML model per sensor type
+("wifi", "phone"), dispatching any resulting detections to the forensic log and
+push notifier.
+"""
+
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,6 +26,8 @@ logger = get_logger(__name__)
 
 @dataclass
 class Detection:
+    """A single detection emitted by a rule or the ML model."""
+
     id: str
     sensor_type: str
     confidence: float
@@ -30,6 +39,8 @@ class Detection:
 
 
 class DetectionEngine:
+    """Runs WiFi/phone readings through detection rules and an ML model."""
+
     def __init__(self, config_path: str = "config/config.yaml", training_mode: bool = False):
         self.config = ConfigLoader.load_config(config_path)
         det = self.config.get("detection", {})
@@ -75,6 +86,7 @@ class DetectionEngine:
             logger.info(f"Saved {stype} model")
 
     def analyze_wifi(self, data: List[dict]) -> List[Detection]:
+        """Analyze a WiFi scan buffer and dispatch any detections."""
         if not data:
             return []
         detections = self._wifi_rules(data[-1]) + self._ml_anomaly(data[-1:], "wifi")
@@ -82,6 +94,7 @@ class DetectionEngine:
         return detections
 
     def analyze_phone(self, data: List[dict]) -> List[Detection]:
+        """Analyze a phone-sensor buffer and dispatch any detections."""
         if not data:
             return []
         detections = self._phone_rules(data[-1]) + self._ml_anomaly(data[-1:], "phone")
@@ -223,8 +236,13 @@ class DetectionEngine:
 
     @staticmethod
     def _score_to_severity(conf: float) -> int:
-        if conf >= 0.9: return 5
-        if conf >= 0.7: return 4
-        if conf >= 0.5: return 3
-        if conf >= 0.3: return 2
+        """Map a confidence in [0, 1] to a 1-5 severity band."""
+        if conf >= 0.9:
+            return 5
+        if conf >= 0.7:
+            return 4
+        if conf >= 0.5:
+            return 3
+        if conf >= 0.3:
+            return 2
         return 1
