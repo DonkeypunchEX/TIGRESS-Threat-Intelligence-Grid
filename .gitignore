@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+
+# TIGRESS runtime output
+data/
+models/
+certs/
+config/secure/
+config/manifest.json
+config/manifest.key
+*.pkl
+*.pkl.scaler
+
+# OS / editor
+.DS_Store
+*.swp

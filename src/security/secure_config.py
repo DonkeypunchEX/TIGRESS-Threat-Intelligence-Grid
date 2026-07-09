@@ -7,7 +7,7 @@ import json
 import logging
 import os
 import subprocess
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -83,7 +83,7 @@ class SecureConfig:
         payload = {
             "id": config_id,
             "name": name,
-            "created": datetime.utcnow().isoformat(),
+            "created": datetime.now(timezone.utc).isoformat(),
             "data": config,
             "hmac": self._hmac(json.dumps(config, sort_keys=True).encode()),
         }

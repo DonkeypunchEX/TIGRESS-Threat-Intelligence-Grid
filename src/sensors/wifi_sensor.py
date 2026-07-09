@@ -2,7 +2,7 @@ import json
 import subprocess
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -60,8 +60,7 @@ class WiFiSensor(BaseSensor):
         while self.recording:
             scan = self._scan()
             if scan:
-                self.data_buffer.append(scan)
-                self.notify(scan)
+                self.record(scan)
             time.sleep(self._interval)
 
     def _scan(self) -> Optional[dict]:
@@ -81,7 +80,7 @@ class WiFiSensor(BaseSensor):
             self._known_bssids.update(new_bssids)
 
             return {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "sensor_id": self.sensor_id,
                 "sensor_type": "wifi",
                 "networks": networks,

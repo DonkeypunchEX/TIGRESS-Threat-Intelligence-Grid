@@ -40,89 +40,33 @@ bash scripts/tigress_launcher.sh --secure
 bash scripts/tigress_launcher.sh --dummy
 ```
 
+The dashboard listens on the host/port from the `server` section of
+`config/config.yaml` (default `127.0.0.1:8080`).
+
+## Configuration
+`config/config.yaml` controls sensors, detection thresholds, and alerting.
+Per-sensor `buffer_limit` (default 1000) caps how many recent readings each
+sensor keeps in memory. Detection rules live in `config/rules.yaml`.
+
 ## Models
-Trained models are saved to `models/`. Delete them to retrain. The engine falls back to rule-based detection until training is complete.
+Trained models are saved to `models/`. Delete them to retrain. The engine falls
+back to rule-based detection until training is complete.
 
 ## Audit Logs
-Logs are written to `data/audit/audit_YYYYMMDD.log`. Each entry is ECDSA-signed and hash-chained. Verify integrity:
+Logs are written to `data/audit/audit_YYYYMMDD.log`. Each entry is ECDSA-signed
+and hash-chained. Verify integrity:
 ```python
 from src.security.audit_log import AuditLog
 print(AuditLog().verify_integrity())
 ```
 
+## Development & Testing
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+The test suite is hermetic — it writes only to pytest temp directories and does
+not require real sensors or Termux.
+
 ## License
 MIT
-```
-
----
-
-**`requirements.txt`**
-```
-# Core
-numpy>=1.24
-scikit-learn>=1.3
-pandas>=2.0
-joblib>=1.3
-
-# Security
-cryptography>=41.0
-bcrypt>=4.0
-PyJWT>=2.8
-
-# API / Dashboard
-fastapi>=0.104
-uvicorn[standard]>=0.24
-httpx>=0.25
-python-multipart>=0.0.6
-
-# System
-psutil>=5.9
-pyyaml>=6.0
-```
-
----
-
-**`.gitignore`**
-```
-__pycache__/
-*.py[cod]
-*.so
-*.egg-info/
-dist/
-build/
-venv/
-env/
-
-# Secrets & generated files
-.env
-config/secure/
-config/manifest.key
-config/manifest.json
-certs/*.key
-certs/*.crt
-
-# Data
-data/raw/
-data/alerts/
-data/audit/
-data/*.pid
-data/*.log
-models/*.pkl
-data/known_bssids.txt
-
-# OS
-.DS_Store
-Thumbs.db
-```
-
----
-
-## Step 2 — Empty placeholder files (keeps folders tracked by git)
-
-Create these empty files exactly as listed:
-```
-data/raw/.gitkeep
-data/alerts/.gitkeep
-data/audit/.gitkeep
-models/.gitkeep
-certs/.gitkeep

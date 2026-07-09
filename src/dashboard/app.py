@@ -52,7 +52,13 @@ def main():
         start_runtime_protection()
 
     _manager = SensorManager(dummy=args.dummy, training=args.train)
-    uvicorn.run(app, host="127.0.0.1", port=8080, log_level="info")
+    server = _manager.config.get("server", {})
+    uvicorn.run(
+        app,
+        host=server.get("host", "127.0.0.1"),
+        port=int(server.get("port", 8080)),
+        log_level="info",
+    )
 
 
 if __name__ == "__main__":

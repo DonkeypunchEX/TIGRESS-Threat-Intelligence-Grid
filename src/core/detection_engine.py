@@ -77,14 +77,14 @@ class DetectionEngine:
     def analyze_wifi(self, data: List[dict]) -> List[Detection]:
         if not data:
             return []
-        detections = self._wifi_rules(data[-1]) + self._ml_anomaly(data, "wifi")
+        detections = self._wifi_rules(data[-1]) + self._ml_anomaly(data[-1:], "wifi")
         self._dispatch(detections)
         return detections
 
     def analyze_phone(self, data: List[dict]) -> List[Detection]:
         if not data:
             return []
-        detections = self._phone_rules(data[-1]) + self._ml_anomaly(data, "phone")
+        detections = self._phone_rules(data[-1]) + self._ml_anomaly(data[-1:], "phone")
         self._dispatch(detections)
         return detections
 
@@ -138,7 +138,7 @@ class DetectionEngine:
                 sensor_type=stype,
                 confidence=conf,
                 severity=self._score_to_severity(conf),
-                timestamp=pd.Timestamp.utcnow().isoformat(),
+                timestamp=pd.Timestamp.now(tz="UTC").isoformat(),
                 sensor_id="ml",
                 description=f"ML anomaly detected in {stype} data",
                 features={"isolation_score": float(score)},
@@ -167,7 +167,7 @@ class DetectionEngine:
                         sensor_type="wifi",
                         confidence=float(rule.get("confidence", 0.8)),
                         severity=int(rule.get("severity", 3)),
-                        timestamp=pd.Timestamp.utcnow().isoformat(),
+                        timestamp=pd.Timestamp.now(tz="UTC").isoformat(),
                         sensor_id="wifi_sensor",
                         description=rule.get("description", rule["id"]),
                         features={"rule": rule["id"], "bssid": net.get("BSSID"), "ssid": net.get("SSID")},
@@ -179,7 +179,7 @@ class DetectionEngine:
                 sensor_type="wifi",
                 confidence=0.7,
                 severity=3,
-                timestamp=pd.Timestamp.utcnow().isoformat(),
+                timestamp=pd.Timestamp.now(tz="UTC").isoformat(),
                 sensor_id="wifi_sensor",
                 description=f"{scan['new_ap_count']} new access points appeared",
                 features={"new_bssids": scan.get("new_bssids", [])},
