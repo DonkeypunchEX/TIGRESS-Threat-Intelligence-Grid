@@ -5,7 +5,7 @@ import hashlib
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -58,7 +58,7 @@ class AuditLog:
     def log(self, event_type: str, data: Dict[str, Any], severity: str = "INFO") -> str:
         entry = {
             "id": hashlib.sha256(os.urandom(32)).hexdigest()[:16],
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "node": self.node_id,
             "type": event_type,
             "severity": severity,

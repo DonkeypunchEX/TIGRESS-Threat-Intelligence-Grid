@@ -1,5 +1,13 @@
+"""Detection engine: rule-based and Isolation Forest anomaly detection.
+
+Combines per-reading YAML rules with an unsupervised ML model per sensor type
+("wifi", "phone"), dispatching any resulting detections to the forensic log and
+push notifier.
+"""
+
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import joblib
@@ -18,6 +26,8 @@ logger = get_logger(__name__)
 
 @dataclass
 class Detection:
+    """A single detection emitted by a rule or the ML model."""
+
     id: str
     sensor_type: str
     confidence: float
@@ -29,6 +39,8 @@ class Detection:
 
 
 class DetectionEngine:
+    """Runs WiFi/phone readings through detection rules and an ML model."""
+
     def __init__(self, config_path: str = "config/config.yaml", training_mode: bool = False):
         self.config = ConfigLoader.load_config(config_path)
         det = self.config.get("detection", {})
@@ -68,21 +80,24 @@ class DetectionEngine:
     def _save_model(self, stype: str):
         path = self._model_paths.get(stype)
         if path:
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
             joblib.dump(self._models[stype], path)
             joblib.dump(self._scalers[stype], path + ".scaler")
             logger.info(f"Saved {stype} model")
 
     def analyze_wifi(self, data: List[dict]) -> List[Detection]:
+        """Analyze a WiFi scan buffer and dispatch any detections."""
         if not data:
             return []
-        detections = self._wifi_rules(data[-1]) + self._ml_anomaly(data, "wifi")
+        detections = self._wifi_rules(data[-1]) + self._ml_anomaly(data[-1:], "wifi")
         self._dispatch(detections)
         return detections
 
     def analyze_phone(self, data: List[dict]) -> List[Detection]:
+        """Analyze a phone-sensor buffer and dispatch any detections."""
         if not data:
             return []
-        detections = self._phone_rules(data[-1]) + self._ml_anomaly(data, "phone")
+        detections = self._phone_rules(data[-1]) + self._ml_anomaly(data[-1:], "phone")
         self._dispatch(detections)
         return detections
 
@@ -136,7 +151,7 @@ class DetectionEngine:
                 sensor_type=stype,
                 confidence=conf,
                 severity=self._score_to_severity(conf),
-                timestamp=pd.Timestamp.utcnow().isoformat(),
+                timestamp=pd.Timestamp.now(tz="UTC").isoformat(),
                 sensor_id="ml",
                 description=f"ML anomaly detected in {stype} data",
                 features={"isolation_score": float(score)},
@@ -165,7 +180,7 @@ class DetectionEngine:
                         sensor_type="wifi",
                         confidence=float(rule.get("confidence", 0.8)),
                         severity=int(rule.get("severity", 3)),
-                        timestamp=pd.Timestamp.utcnow().isoformat(),
+                        timestamp=pd.Timestamp.now(tz="UTC").isoformat(),
                         sensor_id="wifi_sensor",
                         description=rule.get("description", rule["id"]),
                         features={"rule": rule["id"], "bssid": net.get("BSSID"), "ssid": net.get("SSID")},
@@ -177,7 +192,7 @@ class DetectionEngine:
                 sensor_type="wifi",
                 confidence=0.7,
                 severity=3,
-                timestamp=pd.Timestamp.utcnow().isoformat(),
+                timestamp=pd.Timestamp.now(tz="UTC").isoformat(),
                 sensor_id="wifi_sensor",
                 description=f"{scan['new_ap_count']} new access points appeared",
                 features={"new_bssids": scan.get("new_bssids", [])},
@@ -221,8 +236,13 @@ class DetectionEngine:
 
     @staticmethod
     def _score_to_severity(conf: float) -> int:
-        if conf >= 0.9: return 5
-        if conf >= 0.7: return 4
-        if conf >= 0.5: return 3
-        if conf >= 0.3: return 2
+        """Map a confidence in [0, 1] to a 1-5 severity band."""
+        if conf >= 0.9:
+            return 5
+        if conf >= 0.7:
+            return 4
+        if conf >= 0.5:
+            return 3
+        if conf >= 0.3:
+            return 2
         return 1

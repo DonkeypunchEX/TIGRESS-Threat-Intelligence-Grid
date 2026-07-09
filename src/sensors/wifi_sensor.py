@@ -2,7 +2,7 @@ import json
 import subprocess
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -13,6 +13,8 @@ logger = get_logger(__name__)
 
 
 class WiFiSensor(BaseSensor):
+    """Polls `termux-wifi-scaninfo` and tracks newly-seen BSSIDs."""
+
     def __init__(self, sensor_id: str, config: dict):
         super().__init__(sensor_id, "wifi", config)
         self._interval = config.get("scan_interval", 30)
@@ -60,8 +62,7 @@ class WiFiSensor(BaseSensor):
         while self.recording:
             scan = self._scan()
             if scan:
-                self.data_buffer.append(scan)
-                self.notify(scan)
+                self.record(scan)
             time.sleep(self._interval)
 
     def _scan(self) -> Optional[dict]:
@@ -81,7 +82,7 @@ class WiFiSensor(BaseSensor):
             self._known_bssids.update(new_bssids)
 
             return {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "sensor_id": self.sensor_id,
                 "sensor_type": "wifi",
                 "networks": networks,

@@ -8,7 +8,7 @@ import logging
 import os
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -45,7 +45,7 @@ class SecureBoot:
     def create_manifest(self, output_path: Optional[str] = None):
         measurements = self.measure()
         manifest = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "hashes": measurements,
             "signature": self._sign(measurements),
         }

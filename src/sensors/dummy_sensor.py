@@ -1,7 +1,7 @@
 import random
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from src.sensors.base_sensor import BaseSensor
@@ -38,7 +38,7 @@ class DummySensor(BaseSensor):
     def _loop(self):
         while self.recording:
             dp = {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "sensor_id": self.sensor_id,
                 "sensor_type": self.sensor_type,
                 "dummy": True,
@@ -49,6 +49,5 @@ class DummySensor(BaseSensor):
                 "networks": [],
                 "tamper_suspect": False,
             }
-            self.data_buffer.append(dp)
-            self.notify(dp)
+            self.record(dp)
             time.sleep(5)

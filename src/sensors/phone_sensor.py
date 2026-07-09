@@ -3,7 +3,7 @@ import subprocess
 import threading
 import time
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import numpy as np
@@ -15,6 +15,8 @@ logger = get_logger(__name__)
 
 
 class PhoneSensor(BaseSensor):
+    """Samples an accelerometer via `termux-sensor` to detect physical tamper."""
+
     def __init__(self, sensor_id: str, config: dict):
         super().__init__(sensor_id, "phone", config)
         self._sensor_type = config.get("sensor_type", "accelerometer")
@@ -86,7 +88,7 @@ class PhoneSensor(BaseSensor):
             tamper = variance < 0.5 and delta > self._tamper_threshold
 
         dp = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "sensor_id": self.sensor_id,
             "sensor_type": "phone",
             "sensor_name": sensor_key or self._sensor_type,
@@ -95,5 +97,4 @@ class PhoneSensor(BaseSensor):
             "magnitude": magnitude,
             "tamper_suspect": tamper,
         }
-        self.data_buffer.append(dp)
-        self.notify(dp)
+        self.record(dp)

@@ -1,3 +1,5 @@
+"""FastAPI dashboard exposing sensor status and health endpoints."""
+
 import argparse
 from contextlib import asynccontextmanager
 
@@ -15,6 +17,7 @@ _manager: SensorManager = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Start sensors on app startup and stop them on shutdown."""
     _manager.start_all()
     yield
     _manager.stop_all()
@@ -25,20 +28,24 @@ app = FastAPI(title="TIGRESS", lifespan=lifespan)
 
 @app.get("/")
 def root():
+    """Root endpoint: overall status and sensor list."""
     return {"status": "running", "sensors": _manager.list_sensors() if _manager else []}
 
 
 @app.get("/sensors")
 def sensors():
+    """Return per-sensor status."""
     return JSONResponse(_manager.list_sensors())
 
 
 @app.get("/health")
 def health():
+    """Liveness probe reporting whether sensors are running."""
     return {"ok": True, "sensors_running": _manager.is_running if _manager else False}
 
 
 def main():
+    """CLI entry point: parse flags, build the manager, and run the server."""
     global _manager
 
     parser = argparse.ArgumentParser()
@@ -52,7 +59,13 @@ def main():
         start_runtime_protection()
 
     _manager = SensorManager(dummy=args.dummy, training=args.train)
-    uvicorn.run(app, host="127.0.0.1", port=8080, log_level="info")
+    server = _manager.config.get("server", {})
+    uvicorn.run(
+        app,
+        host=server.get("host", "127.0.0.1"),
+        port=int(server.get("port", 8080)),
+        log_level="info",
+    )
 
 
 if __name__ == "__main__":
