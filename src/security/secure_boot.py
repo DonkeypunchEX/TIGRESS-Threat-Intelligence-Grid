@@ -99,10 +99,12 @@ def start_runtime_protection(config: Optional[Dict] = None):
         sys.exit(1)
     logger.info("Boot verification passed")
     from src.security.anti_tamper import RuntimeProtection
+    from src.utils.alerting import AlertDispatcher
     protector = RuntimeProtection(
         {Path(f) for f in TIGRESS_CORE_FILES if Path(f).exists()},
         process_whitelist=security.get("process_whitelist"),
         monitor_processes=bool(security.get("process_monitoring", False)),
+        alert_dispatcher=AlertDispatcher.from_config((config or {}).get("alerting", {})),
     )
     protector.start_monitoring(interval=int(security.get("monitor_interval", 30)))
     return protector

@@ -17,10 +17,10 @@ from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 
 from src.core.detection_store import DetectionStore
+from src.utils.alerting import AlertDispatcher
 from src.utils.config_loader import ConfigLoader
 from src.utils.forensic_logger import ForensicLogger
 from src.utils.logger import get_logger
-from src.utils.termux_notify import notifier
 
 logger = get_logger(__name__)
 
@@ -57,6 +57,7 @@ class DetectionEngine:
             alerting.get("forensic_log", "data/alerts/forensic.jsonl")
         )
         self.history = DetectionStore(max_size=alerting.get("history_size", 500))
+        self.alerts = AlertDispatcher.from_config(alerting)
 
         self._models: Dict[str, IsolationForest] = {}
         self._scalers: Dict[str, StandardScaler] = {}
@@ -109,12 +110,10 @@ class DetectionEngine:
             self.forensic.log("detection", d.__dict__)
             self.history.add(d.__dict__)
             emoji = {5: "🔴", 4: "🟠", 3: "🟡"}.get(d.severity, "⚪")
-            notifier.send(
+            self.alerts.dispatch(
                 title=f"{emoji} TIGRESS – Severity {d.severity}/5",
                 content=f"{d.description} (conf: {d.confidence:.2f})",
-                priority="high" if d.severity >= 4 else "default",
-                vibrate=(d.severity >= 3),
-                ongoing=(d.severity >= 5),
+                severity=d.severity,
             )
 
     def _ml_anomaly(self, data: List[dict], stype: str) -> List[Detection]:

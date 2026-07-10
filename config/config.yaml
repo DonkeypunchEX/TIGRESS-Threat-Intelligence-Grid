@@ -34,6 +34,25 @@ alerting:
   log_file: data/alerts/tigress.log
   forensic_log: data/alerts/forensic.jsonl
   history_size: 500          # recent detections kept in memory for the API
+  channels:                  # pluggable alert delivery; each fires at/above its min_severity
+    termux:
+      enabled: true
+      min_severity: 1
+    webhook:
+      enabled: false
+      url: ""
+      min_severity: 3
+      timeout: 5
+    email:
+      enabled: false
+      smtp_host: ""
+      smtp_port: 587
+      username: ""
+      password: ""
+      from: "tigress@localhost"
+      to: []
+      use_tls: true
+      min_severity: 4
 
 security:
   process_monitoring: false  # alarm on newly-appeared, non-whitelisted processes (--secure)

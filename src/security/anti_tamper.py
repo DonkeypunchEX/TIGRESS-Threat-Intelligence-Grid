@@ -10,7 +10,7 @@ from typing import Dict, Iterable, List, Optional, Set
 
 import psutil
 
-from src.utils.termux_notify import notifier
+from src.utils.alerting import AlertDispatcher, TermuxChannel
 
 logger = logging.getLogger(__name__)
 
@@ -29,12 +29,14 @@ class RuntimeProtection:
         critical_files: Set[Path],
         process_whitelist: Optional[Iterable[str]] = None,
         monitor_processes: bool = False,
+        alert_dispatcher: Optional[AlertDispatcher] = None,
     ):
         self.critical_files = critical_files
         self._baseline_hashes: Dict[Path, str] = self._hash_files()
         self._thread = None
         self._running = False
         self.violations: List[str] = []
+        self._alerts = alert_dispatcher or AlertDispatcher([TermuxChannel()])
 
         # Process monitoring: alarm only on processes that appear *after* a
         # baseline is established and are not on the whitelist.
@@ -148,10 +150,8 @@ class RuntimeProtection:
         alert_log.parent.mkdir(exist_ok=True, parents=True)
         with open(alert_log, "a") as f:
             f.write(f"{time.time():.0f}: {reason}\n")
-        notifier.send(
+        self._alerts.dispatch(
             title="🚨 TIGRESS — Tamper Detected",
             content=reason,
-            priority="max",
-            vibrate=True,
-            ongoing=True,
+            severity=5,
         )
