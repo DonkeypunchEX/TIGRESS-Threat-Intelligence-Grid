@@ -59,3 +59,28 @@ def test_add_copies_input():
     store.add(d)
     d["severity"] = 1  # mutating the caller's dict must not change the store
     assert store.recent()[0]["severity"] == 4
+
+
+def test_add_deep_copies_nested_objects():
+    store = DetectionStore()
+    d = {"id": "x", "severity": 4, "sensor_type": "wifi", "features": {"score": 0.9}}
+    store.add(d)
+    d["features"]["score"] = 0.1  # nested mutation must not reach the store
+    assert store.recent()[0]["features"]["score"] == 0.9
+
+
+def test_recent_returns_isolated_copies():
+    store = DetectionStore()
+    store.add({"id": "x", "severity": 4, "sensor_type": "wifi", "features": {"score": 0.9}})
+    returned = store.recent()[0]
+    returned["features"]["score"] = 0.0  # mutating the result must not corrupt the store
+    assert store.recent()[0]["features"]["score"] == 0.9
+
+
+def test_clear_empties_store():
+    store = DetectionStore()
+    store.add(_det(1))
+    store.add(_det(2))
+    store.clear()
+    assert len(store) == 0
+    assert store.recent() == []

@@ -6,6 +6,7 @@ forensic JSONL log; this store is the fast, in-memory view of the most recent
 ones.
 """
 
+import copy
 import threading
 from collections import deque
 from typing import Any, Deque, Dict, List, Optional
@@ -19,9 +20,13 @@ class DetectionStore:
         self._lock = threading.Lock()
 
     def add(self, detection: Dict[str, Any]) -> None:
-        """Record a detection (a ``Detection.__dict__``)."""
+        """Record a detection (a ``Detection.__dict__``).
+
+        The detection is deep-copied so later mutation of the caller's object
+        (including nested values such as ``features``) cannot alter the store.
+        """
         with self._lock:
-            self._items.append(dict(detection))
+            self._items.append(copy.deepcopy(detection))
 
     def recent(
         self,
@@ -45,7 +50,7 @@ class DetectionStore:
                 continue
             if sensor_type and d.get("sensor_type") != sensor_type:
                 continue
-            out.append(d)
+            out.append(copy.deepcopy(d))  # isolate callers from stored data
             if len(out) >= limit:
                 break
         return out
