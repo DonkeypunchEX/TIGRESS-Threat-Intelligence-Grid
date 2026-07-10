@@ -51,6 +51,7 @@ class RuntimeProtection:
         return {p: hashlib.sha512(p.read_bytes()).hexdigest() for p in self.critical_files if p.exists()}
 
     def verify_files(self) -> bool:
+        """Return True if no critical file was modified or removed."""
         current = self._hash_files()
         for path, original in self._baseline_hashes.items():
             if path not in current:
@@ -62,6 +63,7 @@ class RuntimeProtection:
         return True
 
     def verify_no_debugger(self) -> bool:
+        """Return True if no debugger is attached (TracerPid == 0)."""
         try:
             status = Path(f"/proc/{os.getpid()}/status").read_text()
             for line in status.splitlines():
@@ -114,12 +116,14 @@ class RuntimeProtection:
         return not new
 
     def start_monitoring(self, interval: int = 30):
+        """Start the background monitoring thread."""
         self._running = True
         self._thread = threading.Thread(target=self._loop, args=(interval,), daemon=True)
         self._thread.start()
         logger.info("Runtime protection active")
 
     def stop_monitoring(self):
+        """Stop the background monitoring thread."""
         self._running = False
         if self._thread:
             self._thread.join(timeout=5)

@@ -85,9 +85,11 @@ class SensorManager:
 
     @property
     def is_running(self) -> bool:
+        """Whether the sensor threads are currently running."""
         return self._running
 
     def _on_data(self, sid: str, dp: dict):
+        """Fan a new reading to global subscribers and the detection engine."""
         stype = sid.split("_")[0]
 
         with self._lock:
