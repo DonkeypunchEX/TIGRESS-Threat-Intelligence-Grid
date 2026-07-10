@@ -60,6 +60,37 @@ curl "http://127.0.0.1:8080/detections?min_severity=4&limit=20"
 curl "http://127.0.0.1:8080/detections/summary"
 ```
 
+## Alert Channels
+Alerts (detections and tamper alarms) fan out to any number of pluggable
+channels, each firing at or above its own `min_severity`. All channels are
+standard-library only. Configure them under `alerting.channels` in
+`config/config.yaml`:
+
+```yaml
+alerting:
+  channels:
+    termux:                    # on-device push (default)
+      enabled: true
+      min_severity: 1
+    webhook:                   # POST JSON to a URL (SIEM, chat, automation)
+      enabled: true
+      url: "https://hooks.example.com/tigress"
+      min_severity: 3
+    email:                     # SMTP (STARTTLS + auth)
+      enabled: true
+      smtp_host: "smtp.example.com"
+      smtp_port: 587
+      username: "tigress@example.com"
+      password: "app-password"     # or leave blank and set TIGRESS_SMTP_PASSWORD
+      from: "tigress@example.com"
+      to: ["soc@example.com"]
+      min_severity: 4
+```
+
+The SMTP password may be supplied via the `TIGRESS_SMTP_PASSWORD` environment
+variable instead of the config file. A failing channel never blocks the others. Omit the `channels` block entirely
+to keep the previous Termux-only behaviour.
+
 ## Configuration
 `config/config.yaml` controls sensors, detection thresholds, and alerting.
 Per-sensor `buffer_limit` (default 1000) caps how many recent readings each
@@ -82,7 +113,8 @@ security:
   monitor_interval: 30               # seconds between checks
 ```
 
-Alarms are written to `data/alerts/tamper.log` and pushed via `termux-notification`.
+Alarms are written to `data/alerts/tamper.log` and dispatched through the
+configured [alert channels](#alert-channels) (Termux, webhook, and/or email).
 
 ## Models
 Trained models are saved to `models/`. Delete them to retrain. The engine falls
