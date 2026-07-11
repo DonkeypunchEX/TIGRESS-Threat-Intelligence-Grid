@@ -19,7 +19,6 @@ import os
 import sys
 import tempfile
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # Make the repository importable when run as `python scripts/demo_end_to_end.py`.
@@ -106,62 +105,63 @@ def main():
     from pathlib import Path
 
     tmp = Path(tempfile.mkdtemp(prefix="tigress-demo-"))
+    server = None
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _WebhookHandler)
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        webhook_url = f"http://127.0.0.1:{port}/alert"
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _WebhookHandler)
-    port = server.server_address[1]
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    webhook_url = f"http://127.0.0.1:{port}/alert"
+        print("TIGRESS end-to-end demo (no Android required)")
+        print(f"  workdir:  {tmp}")
+        print(f"  webhook:  {webhook_url}")
 
-    print("TIGRESS end-to-end demo (no Android required)")
-    print(f"  workdir:  {tmp}")
-    print(f"  webhook:  {webhook_url}")
+        config_path = _write_config(tmp, webhook_url)
+        engine = DetectionEngine(config_path)
 
-    config_path = _write_config(tmp, webhook_url)
-    engine = DetectionEngine(config_path)
+        _banner("1. Feeding threat-shaped sensor readings")
 
-    _banner("1. Feeding threat-shaped sensor readings")
+        _show("Rogue WiFi SSID", engine.analyze_wifi([{
+            "networks": [{"SSID": "Free_Airport_WiFi", "BSSID": "de:ad:be:ef:00:01"}],
+            "ap_count": 1, "new_ap_count": 0, "new_bssids": [],
+        }]))
+        _show("WiFi new-AP surge", engine.analyze_wifi([{
+            "networks": [{"SSID": "CorpNet", "BSSID": "aa:bb:cc:dd:ee:01"}],
+            "ap_count": 8, "new_ap_count": 7,
+            "new_bssids": [f"aa:bb:cc:dd:ee:{i:02x}" for i in range(7)],
+        }]))
+        _show("BLE tracker nearby", engine.analyze_bluetooth([{
+            "devices": [{"address": "11:22:33:44:55:66", "name": "John's AirTag", "rssi": -38}],
+            "device_count": 1, "new_device_count": 0, "new_devices": [],
+        }]))
+        _show("BLE new-device surge", engine.analyze_bluetooth([{
+            "devices": [{"address": "77:88:99:aa:bb:cc", "name": "Unknown", "rssi": -75}],
+            "device_count": 6, "new_device_count": 6,
+            "new_devices": [f"77:88:99:aa:bb:{i:02x}" for i in range(6)],
+        }]))
 
-    _show("Rogue WiFi SSID", engine.analyze_wifi([{
-        "networks": [{"SSID": "Free_Airport_WiFi", "BSSID": "de:ad:be:ef:00:01"}],
-        "ap_count": 1, "new_ap_count": 0, "new_bssids": [],
-    }]))
-    _show("WiFi new-AP surge", engine.analyze_wifi([{
-        "networks": [{"SSID": "CorpNet", "BSSID": "aa:bb:cc:dd:ee:01"}],
-        "ap_count": 8, "new_ap_count": 7,
-        "new_bssids": [f"aa:bb:cc:dd:ee:{i:02x}" for i in range(7)],
-    }]))
-    _show("BLE tracker nearby", engine.analyze_bluetooth([{
-        "devices": [{"address": "11:22:33:44:55:66", "name": "John's AirTag", "rssi": -38}],
-        "device_count": 1, "new_device_count": 0, "new_devices": [],
-    }]))
-    _show("BLE new-device surge", engine.analyze_bluetooth([{
-        "devices": [{"address": "77:88:99:aa:bb:cc", "name": "Unknown", "rssi": -75}],
-        "device_count": 6, "new_device_count": 6,
-        "new_devices": [f"77:88:99:aa:bb:{i:02x}" for i in range(6)],
-    }]))
+        _banner("2. Alerts delivered to the webhook")
+        print(f"  {len(DELIVERED)} alert(s) received over HTTP:")
+        for a in DELIVERED:
+            print(f"    → sev {a['severity']}: {a['content']}  [{a['title']}]")
 
-    time.sleep(0.3)  # let the webhook deliveries land
+        _banner("3. Detection history + summary (backs the /detections API)")
+        print(f"  stored detections: {len(engine.history)}")
+        print(f"  summary: {json.dumps(engine.history.summary())}")
+        forensic = tmp / "forensic.jsonl"
+        if forensic.exists():
+            lines = forensic.read_text().splitlines()
+            print(f"  forensic log: {len(lines)} fsynced JSONL record(s) at {forensic.name}")
 
-    _banner("2. Alerts delivered to the webhook")
-    print(f"  {len(DELIVERED)} alert(s) received over HTTP:")
-    for a in DELIVERED:
-        print(f"    → sev {a['severity']}: {a['content']}  [{a['title']}]")
+        _banner("4. Authenticated /detections API")
+        _demo_api(engine)
 
-    _banner("3. Detection history + summary (backs the /detections API)")
-    print(f"  stored detections: {len(engine.history)}")
-    print(f"  summary: {json.dumps(engine.history.summary())}")
-    forensic = tmp / "forensic.jsonl"
-    if forensic.exists():
-        lines = forensic.read_text().splitlines()
-        print(f"  forensic log: {len(lines)} fsynced JSONL record(s) at {forensic.name}")
-
-    _banner("4. Authenticated /detections API")
-    _demo_api(engine)
-
-    server.shutdown()
-    shutil.rmtree(tmp, ignore_errors=True)
-    print("\n\033[1mDone.\033[0m The full pipeline ran end-to-end with no Android or "
-          "external services.")
+        print("\n\033[1mDone.\033[0m The full pipeline ran end-to-end with no Android or "
+              "external services.")
+    finally:
+        if server is not None:
+            server.shutdown()
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def _demo_api(engine):
