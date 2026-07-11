@@ -46,6 +46,15 @@ bash scripts/tigress_launcher.sh --dummy
 The dashboard listens on the host/port from the `server` section of
 `config/config.yaml` (default `127.0.0.1:8080`).
 
+## Try it end-to-end (no Android)
+See the detection pipeline work in one command — it stands up a local webhook
+receiver, feeds the real engine threat-shaped WiFi/BLE scans, and shows
+detections firing, alerts delivered over HTTP, and the authenticated
+`/detections` API returning them:
+```bash
+python scripts/demo_end_to_end.py
+```
+
 ## Dashboard API
 The dashboard exposes read-only JSON endpoints:
 
