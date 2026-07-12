@@ -59,6 +59,23 @@ def test_detections_are_recorded_in_history(engine):
     assert {d["id"] for d in recorded} == {d.id for d in detections}
 
 
+def test_detections_persist_to_event_store(config_path, tmp_path):
+    import yaml
+
+    # Enable the durable store by adding event_db to the isolated config.
+    cfg = yaml.safe_load(open(config_path))
+    cfg["alerting"]["event_db"] = str(tmp_path / "events.db")
+    open(config_path, "w").write(yaml.safe_dump(cfg))
+
+    engine = DetectionEngine(config_path)
+    detections = engine.analyze_wifi([_wifi_scan(ssid="EvilTwin", new_ap_count=9)])
+    assert detections
+
+    stored = engine.event_store.recent(event_type="detection")
+    assert {r["data"]["id"] for r in stored} == {d.id for d in detections}
+    assert engine.event_store.count() == len(detections)
+
+
 def test_phone_tamper_rule(engine):
     dp = {
         "tamper_suspect": True,

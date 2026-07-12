@@ -68,13 +68,26 @@ The dashboard exposes read-only JSON endpoints:
 | `GET /` | Status and sensor list |
 | `GET /sensors` | Per-sensor status |
 | `GET /health` | Liveness probe |
-| `GET /detections` | Recent detections, newest first. Query params: `limit`, `min_severity` (1-5), `sensor_type` (`wifi`/`phone`/`bluetooth`/`correlation`/`network`), `pyramid_level` (`address`/`artifact`/`tool`/`ttp`) |
+| `GET /detections` | Recent detections, newest first (in-memory). Query params: `limit`, `min_severity` (1-5), `sensor_type` (`wifi`/`phone`/`bluetooth`/`correlation`/`network`), `pyramid_level` (`address`/`artifact`/`tool`/`ttp`) |
 | `GET /detections/summary` | Counts of recent detections by severity, sensor type, and Pyramid of Pain band |
+| `GET /events` | Query the durable event store (persists across restarts). Params: `limit`, `event_type`, `min_severity`, `sensor_type`, `since`/`until` (ISO), `q` (description substring) |
+| `GET /events/summary` | Counts of persisted events by severity, type, and sensor over a `since`/`until` window |
+| `GET /analytics` | Time-bucketed event counts (`bucket` = `hour`/`day`/`month`) plus top descriptions, filtered by `event_type`, `since`/`until` |
 | `POST /ingest/suricata` | Ingest Suricata EVE alert(s) from a router/gateway. Body: one EVE record or a list. Always requires the bearer token (returns 403 if none is configured) |
 
+### Persistent event store (SQLite)
+`/detections` is a fast in-memory view of the most recent detections and is lost
+on restart. For durable, queryable history, TIGRESS also writes every detection
+(and other forensic events) to a SQLite database — the standard-library
+`sqlite3`, no extra dependencies. It backs `/events`, `/events/summary`, and
+`/analytics`, and complements (does not replace) the tamper-evident forensic
+JSONL and signed audit log, which remain the authoritative record. Enable it via
+`alerting.event_db` (default `data/events.db`; set empty to disable). All queries
+are parameterized — there is no raw-SQL endpoint.
+
 ### Authentication
-The data endpoints (`/`, `/sensors`, `/detections`, `/detections/summary`) can
-require a bearer token. Set `server.api_token` in the config **or** the
+The data endpoints (`/`, `/sensors`, `/detections`, `/detections/summary`,
+`/events`, `/events/summary`, `/analytics`) can require a bearer token. Set `server.api_token` in the config **or** the
 `TIGRESS_API_TOKEN` environment variable; when set, requests without a valid
 `Authorization: Bearer <token>` header get `401`. `/health` is always open for
 liveness probes. If neither a token nor `--secure` (mTLS) is configured, the

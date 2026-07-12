@@ -15,7 +15,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +40,7 @@ class ForensicLogger:
         retention_days: int = 0,
         rotation_interval: float = 0,
         signer: Optional[Any] = None,
+        on_write: Optional[Callable[[str, Dict[str, Any]], None]] = None,
     ):
         """Rotate the active log by size and/or age.
 
@@ -58,6 +59,9 @@ class ForensicLogger:
         self.retention_days = int(retention_days)
         self.rotation_interval = float(rotation_interval)
         self.signer = signer
+        # Optional mirror (e.g. EventStore.record) invoked for every event so
+        # the durable, queryable store stays in sync with the forensic log.
+        self._on_write = on_write
         # Serialize writes and rotation: sensors run on separate threads, so a
         # rotate() (rename + sidecar + prune) must not interleave with another
         # thread's append or a concurrent rotation.
@@ -85,6 +89,13 @@ class ForensicLogger:
                     os.fsync(f.fileno())
             except OSError as e:
                 logger.error(f"Forensic log write failed: {e}")
+        # Mirror to the durable store outside the file lock; a mirror failure
+        # must never break forensic logging.
+        if self._on_write is not None:
+            try:
+                self._on_write(event_type, data)
+            except Exception as e:
+                logger.error(f"Forensic event mirror failed: {e}")
 
     def _maybe_rotate(self, incoming_bytes: int):
         # Caller (log) already holds self._lock.

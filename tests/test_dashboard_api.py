@@ -6,6 +6,7 @@ pytest.importorskip("fastapi")
 pytest.importorskip("uvicorn")
 
 from src.core.detection_store import DetectionStore
+from src.core.event_store import EventStore
 from src.dashboard import app
 
 
@@ -18,6 +19,20 @@ def manager_with_detections(monkeypatch):
     fake = SimpleNamespace(detection_engine=SimpleNamespace(history=store))
     monkeypatch.setattr(app, "_manager", fake)
     return store
+
+
+@pytest.fixture
+def manager_with_events(monkeypatch, tmp_path):
+    events = EventStore(str(tmp_path / "events.db"))
+    events.record("detection", {"id": "a", "severity": 2, "sensor_type": "wifi",
+                                "description": "low", "timestamp": "2026-05-01T00:00:00+00:00"})
+    events.record("detection", {"id": "b", "severity": 5, "sensor_type": "wifi",
+                                "description": "high", "timestamp": "2026-05-02T00:00:00+00:00"})
+    events.record("tamper", {"severity": 5, "description": "file changed",
+                             "timestamp": "2026-05-02T00:00:00+00:00"})
+    fake = SimpleNamespace(detection_engine=SimpleNamespace(event_store=events))
+    monkeypatch.setattr(app, "_manager", fake)
+    return events
 
 
 def test_detections_endpoint_newest_first(manager_with_detections):
@@ -40,10 +55,36 @@ def test_detections_summary_endpoint(manager_with_detections):
     assert summary["by_sensor_type"] == {"wifi": 2, "phone": 1}
 
 
+def test_events_endpoint_filters_and_persists(manager_with_events):
+    assert [e["type"] for e in app.events()] == ["tamper", "detection", "detection"]
+    assert [e["data"]["id"] for e in app.events(event_type="detection")] == ["b", "a"]
+    assert len(app.events(min_severity=5)) == 2
+    assert [e["data"]["id"] for e in app.events(q="high")] == ["b"]
+    assert len(app.events(since="2026-05-02T00:00:00+00:00")) == 2
+
+
+def test_events_summary_endpoint(manager_with_events):
+    summary = app.events_summary()
+    assert summary["total"] == 3
+    assert summary["by_type"] == {"detection": 2, "tamper": 1}
+
+
+def test_analytics_endpoint(manager_with_events):
+    a = app.analytics(bucket="day", event_type="detection")
+    assert a["counts"] == [
+        {"bucket": "2026-05-01", "count": 1},
+        {"bucket": "2026-05-02", "count": 1},
+    ]
+    assert {t["description"] for t in a["top_descriptions"]} == {"low", "high"}
+
+
 def test_endpoints_safe_without_manager(monkeypatch):
     monkeypatch.setattr(app, "_manager", None)
     assert app.detections() == []
     assert app.detections_summary()["total"] == 0
+    assert app.events() == []
+    assert app.events_summary()["total"] == 0
+    assert app.analytics()["counts"] == []
 
 
 def test_detections_pyramid_level_filter(monkeypatch):

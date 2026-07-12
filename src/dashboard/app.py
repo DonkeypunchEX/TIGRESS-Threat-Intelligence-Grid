@@ -128,6 +128,54 @@ def ingest_suricata(payload: Union[List[Any], Dict[str, Any]] = Body(...)):
     return _manager.detection_engine.ingest_network(payload)
 
 
+@app.get("/events", dependencies=[Depends(_require_token)])
+def events(
+    limit: int = 50,
+    event_type: Optional[str] = None,
+    min_severity: Optional[int] = None,
+    sensor_type: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    q: Optional[str] = None,
+):
+    """Query the durable event store (persists across restarts).
+
+    Unlike ``/detections`` (recent, in-memory), this reads from SQLite and
+    supports ``event_type``, ``min_severity``, ``sensor_type``, ISO ``since`` /
+    ``until`` bounds, and a ``q`` substring match on the description. Returns
+    ``[]`` when persistence is disabled.
+    """
+    if not _manager:
+        return []
+    return _manager.detection_engine.event_store.recent(
+        limit=limit, event_type=event_type, min_severity=min_severity,
+        sensor_type=sensor_type, since=since, until=until, text=q,
+    )
+
+
+@app.get("/events/summary", dependencies=[Depends(_require_token)])
+def events_summary(since: Optional[str] = None, until: Optional[str] = None):
+    """Counts of persisted events by severity, type, and sensor over a window."""
+    if not _manager:
+        return {"total": 0, "by_severity": {}, "by_type": {}, "by_sensor_type": {}}
+    return _manager.detection_engine.event_store.summary(since=since, until=until)
+
+
+@app.get("/analytics", dependencies=[Depends(_require_token)])
+def analytics(
+    bucket: str = "day",
+    event_type: str = "detection",
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+):
+    """Time-bucketed event counts (``hour``/``day``/``month``) + top descriptions."""
+    if not _manager:
+        return {"bucket": bucket, "counts": [], "top_descriptions": []}
+    return _manager.detection_engine.event_store.analytics(
+        bucket=bucket, event_type=event_type, since=since, until=until,
+    )
+
+
 def _ssl_options(secure: bool, server: Dict[str, Any]) -> Dict[str, Any]:
     """Build uvicorn TLS/mTLS keyword arguments.
 
