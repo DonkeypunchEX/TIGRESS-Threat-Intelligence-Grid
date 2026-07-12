@@ -142,11 +142,15 @@ sensor keeps in memory. `alerting.history_size` (default 500) caps how many
 recent detections are held in memory for the `/detections` API. Detection rules
 live in `config/rules.yaml`.
 
-The forensic log can rotate and self-prune: `alerting.forensic_max_bytes`
+The forensic log can rotate and self-prune. `alerting.forensic_max_bytes`
 (default 0 = never) rotates the active log under a dated filename once it would
-exceed that size, writing a detached `<file>.sha256` sidecar (the hash stored
-*separately* from the data), and `alerting.forensic_retention_days` (default 0 =
-keep forever) prunes rotated logs older than the window.
+exceed that size, and `alerting.forensic_rotation_interval` (seconds, default 0
+= never) rotates on the first write after that much time has elapsed — a
+size-independent trigger so retention works even on a small log. Each rotation
+writes a detached `<file>.sha256` sidecar (the hash stored *separately* from the
+data). `alerting.forensic_retention_days` (default 0 = keep forever) prunes
+rotated logs older than the window on each rotation; set `forensic_max_bytes`
+and/or `forensic_rotation_interval` for pruning to ever run.
 
 ### Security posture
 One knob retunes the whole grid coherently — set `posture` in the config or
@@ -227,7 +231,9 @@ is the combination: a randomized-MAC device flagged by enrichment that then
 trips the persistence correlation rule.
 
 ## Runtime Protection
-Running with `--secure` verifies the boot manifest and starts runtime integrity
+Running with `--secure` first enforces self-validation (see
+[Self-Validation](#self-validation) — startup is refused if the detector can't
+be validated), then verifies the boot manifest and starts runtime integrity
 monitoring: critical-file hashing and debugger detection, plus optional
 **process monitoring**. When `security.process_monitoring` is enabled, TIGRESS
 records a baseline of running processes at startup and alarms only when a
@@ -299,10 +305,12 @@ It runs the real engine over the golden dataset, confirms the expected
 detections fire, writes a versioned `validation_<version>_<timestamp>.json`
 record, and exits non-zero on any failure (usable as a CI/release gate).
 `src.core.selftest.needs_revalidation(dir)` reports when the latest record is
-missing, failed, or was produced by a different version. On startup the
-dashboard logs a warning when no current passing validation exists (records are
-read from `app.validation_dir`, default `data/validation`), nudging you to run
-the self-test before relying on detections.
+missing, failed, or was produced by a different version (records are read from
+`app.validation_dir`, default `data/validation`). On a normal startup the
+dashboard only logs a warning when no current passing validation exists. Under
+`--secure` it is **enforced**: if validation is needed the self-test runs
+inline, and startup is refused (non-zero exit) if it fails — so a secure
+deployment never serves an unvalidated or broken detector.
 
 ## Development & Testing
 ```bash

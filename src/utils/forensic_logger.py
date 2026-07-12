@@ -38,27 +38,37 @@ class ForensicLogger:
         log_path: str,
         max_bytes: int = 0,
         retention_days: int = 0,
+        rotation_interval: float = 0,
         signer: Optional[Any] = None,
     ):
-        """``max_bytes`` (0 disables) rotates the log once it would be exceeded.
+        """Rotate the active log by size and/or age.
 
-        ``retention_days`` (0 disables) prunes rotated files older than that.
-        ``signer`` is an optional object exposing ``sign_bytes``/``public_key_b64``
-        (e.g. :class:`~src.security.audit_log.AuditLog`) used to sign the sidecar.
+        ``max_bytes`` (0 disables) rotates once the log would exceed that size.
+        ``rotation_interval`` seconds (0 disables) rotates on the first write
+        after that much time has elapsed since the last rotation — giving a
+        size-independent trigger so ``retention_days`` pruning runs even on a
+        small log. ``retention_days`` (0 disables) prunes rotated files older
+        than that. ``signer`` optionally signs each sidecar (an object exposing
+        ``sign_bytes``/``public_key_b64``, e.g.
+        :class:`~src.security.audit_log.AuditLog`).
         """
         self.log_path = Path(log_path)
         self.log_path.parent.mkdir(exist_ok=True, parents=True)
         self.max_bytes = int(max_bytes)
         self.retention_days = int(retention_days)
+        self.rotation_interval = float(rotation_interval)
         self.signer = signer
         # Serialize writes and rotation: sensors run on separate threads, so a
         # rotate() (rename + sidecar + prune) must not interleave with another
         # thread's append or a concurrent rotation.
         self._lock = threading.Lock()
-        if self.retention_days > 0 and self.max_bytes <= 0:
+        # Monotonic clock for time-based rotation; reset on every rotation.
+        self._period_start = time.monotonic()
+        if self.retention_days > 0 and self.max_bytes <= 0 and self.rotation_interval <= 0:
             logger.warning(
-                "forensic retention_days=%d is set but max_bytes=0; rotation "
-                "(and therefore pruning) never triggers automatically.",
+                "forensic retention_days=%d is set but neither max_bytes nor "
+                "rotation_interval is configured; rotation (and therefore "
+                "pruning) never triggers automatically.",
                 self.retention_days,
             )
 
@@ -78,11 +88,18 @@ class ForensicLogger:
 
     def _maybe_rotate(self, incoming_bytes: int):
         # Caller (log) already holds self._lock.
-        if self.max_bytes <= 0 or not self.log_path.exists():
+        if not self.log_path.exists():
             return
-        if self.log_path.stat().st_size + incoming_bytes <= self.max_bytes:
-            return
-        self._rotate_locked()
+        size_trigger = (
+            self.max_bytes > 0
+            and self.log_path.stat().st_size + incoming_bytes > self.max_bytes
+        )
+        time_trigger = (
+            self.rotation_interval > 0
+            and (time.monotonic() - self._period_start) >= self.rotation_interval
+        )
+        if size_trigger or time_trigger:
+            self._rotate_locked()
 
     def rotate(self) -> Optional[Path]:
         """Rotate the active log to a dated file with a detached hash sidecar.
@@ -95,6 +112,9 @@ class ForensicLogger:
 
     def _rotate_locked(self) -> Optional[Path]:
         """Rotate implementation; the caller must hold ``self._lock``."""
+        # Reset the time-rotation clock on any rotation attempt (including an
+        # empty-log no-op) so an idle log doesn't retrigger on every write.
+        self._period_start = time.monotonic()
         if not self.log_path.exists() or self.log_path.stat().st_size == 0:
             return None
         # UTC, consistent with provenance() and AuditLog timestamps, so

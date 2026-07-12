@@ -63,6 +63,7 @@ class DetectionEngine:
             alerting.get("forensic_log", "data/alerts/forensic.jsonl"),
             max_bytes=alerting.get("forensic_max_bytes", 0),
             retention_days=alerting.get("forensic_retention_days", 0),
+            rotation_interval=alerting.get("forensic_rotation_interval", 0),
         )
         self.history = DetectionStore(max_size=alerting.get("history_size", 500))
         self.alerts = AlertDispatcher.from_config(alerting)
