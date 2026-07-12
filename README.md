@@ -99,6 +99,7 @@ alerting:
       enabled: true
       url: "https://hooks.example.com/tigress"
       min_severity: 3
+      allowed_hosts: ["hooks.example.com"]   # egress allowlist (see below)
     email:                     # SMTP (STARTTLS + auth)
       enabled: true
       smtp_host: "smtp.example.com"
@@ -113,6 +114,20 @@ alerting:
 The SMTP password may be supplied via the `TIGRESS_SMTP_PASSWORD` environment
 variable instead of the config file. A failing channel never blocks the others. Omit the `channels` block entirely
 to keep the previous Termux-only behaviour.
+
+### Asynchronous delivery
+By default (`alerting.async_dispatch: true`) alerts are delivered on background
+worker threads, so a slow or hung webhook/SMTP server never stalls the detection
+pipeline. Tune `async_workers` (thread count) and `queue_size` (max queued
+alerts before new ones are dropped with a warning). Set `async_dispatch: false`
+to deliver inline in the detection thread instead.
+
+### Webhook egress allowlist
+The webhook channel accepts an `allowed_hosts` list. When set, TIGRESS only
+POSTs to those hosts and refuses any other target — an egress control that
+bounds where alerts (and anyone who can influence the configured URL) can send
+traffic. Redirects are never followed, so an allow-listed host cannot bounce the
+request elsewhere. Leave it empty/unset for unrestricted delivery.
 
 ## Configuration
 `config/config.yaml` controls sensors, detection thresholds, and alerting.
@@ -160,6 +175,17 @@ ruff check src tests
 The test suite is hermetic — it writes only to pytest temp directories and does
 not require real sensors or Termux. `ruff` lints the code and enforces docstrings
 on the `src/` package (see `ruff.toml`); CI runs both on Python 3.10–3.12.
+
+### Security scanning
+CI also runs a `security-scan` job on every push and pull request:
+[`bandit`](https://bandit.readthedocs.io/) statically scans `src/` for common
+security issues (medium severity and above), and
+[`pip-audit`](https://pypi.org/project/pip-audit/) audits the pinned
+dependencies for known vulnerabilities. Run them locally with:
+```bash
+bandit -r src -ll
+pip-audit -r requirements.txt
+```
 
 ## License
 MIT

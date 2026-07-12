@@ -118,7 +118,7 @@ class DetectionEngine:
             self.forensic.log("detection", d.__dict__)
             self.history.add(d.__dict__)
             emoji = {5: "🔴", 4: "🟠", 3: "🟡"}.get(d.severity, "⚪")
-            self.alerts.dispatch(
+            self.alerts.submit(
                 title=f"{emoji} TIGRESS – Severity {d.severity}/5",
                 content=f"{d.description} (conf: {d.confidence:.2f})",
                 severity=d.severity,
