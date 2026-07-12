@@ -60,20 +60,43 @@ def _record_timestamp(record: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _in_window(record: Dict[str, Any], since: Optional[str], until: Optional[str]) -> bool:
-    """True if the record falls within [since, until].
+def _parse_ts(value: str) -> datetime:
+    """Parse an ISO-8601 timestamp into a timezone-aware UTC datetime.
 
-    Records without a timestamp are always included — they cannot be excluded
-    on time and dropping them would lose context.
+    Accepts a trailing ``Z`` and naive timestamps (assumed UTC) so comparisons
+    are normalized regardless of the original offset/representation.
+    """
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    dt = datetime.fromisoformat(text)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _in_window(
+    record: Dict[str, Any], since: Optional[datetime], until: Optional[datetime]
+) -> bool:
+    """True if the record falls within the [since, until] UTC window.
+
+    Records without a parseable timestamp are always included — they cannot be
+    excluded on time and dropping them would lose context. Bounds are compared
+    as timezone-aware datetimes, so equivalent instants with different offsets
+    match.
     """
     if since is None and until is None:
         return True
     ts = _record_timestamp(record)
     if ts is None:
         return True
-    if since is not None and ts < since:
+    try:
+        moment = _parse_ts(ts)
+    except ValueError:
+        return True
+    if since is not None and moment < since:
         return False
-    if until is not None and ts > until:
+    if until is not None and moment > until:
         return False
     return True
 
@@ -88,22 +111,30 @@ class EvidenceExporter:
         self.signer = signer
 
     def _read_records(
-        self, since: Optional[str], until: Optional[str],
+        self, since: Optional[datetime], until: Optional[datetime],
         event_types: Optional[List[str]],
     ) -> List[Dict[str, Any]]:
-        records: List[Dict[str, Any]] = []
+        # Fail closed: a missing source or a corrupt line must not silently
+        # yield an incomplete-but-signed evidence bundle.
         if not self.forensic_log.exists():
-            return records
+            raise FileNotFoundError(f"Forensic log not found: {self.forensic_log}")
+        records: List[Dict[str, Any]] = []
         types = set(event_types) if event_types else None
         with open(self.forensic_log) as f:
-            for line in f:
+            for lineno, line in enumerate(f, start=1):
                 line = line.strip()
                 if not line:
                     continue
                 try:
                     rec = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
+                except json.JSONDecodeError as e:
+                    raise ValueError(
+                        f"Invalid JSON at {self.forensic_log}:{lineno}: {e}"
+                    ) from e
+                if not isinstance(rec, dict):
+                    raise ValueError(
+                        f"Expected a JSON object at {self.forensic_log}:{lineno}"
+                    )
                 if types is not None and rec.get("type") not in types:
                     continue
                 if not _in_window(rec, since, until):
@@ -122,20 +153,28 @@ class EvidenceExporter:
         """Write an evidence bundle to ``output_dir`` and return its manifest.
 
         The bundle contains ``evidence.jsonl`` (the selected records),
-        ``manifest.json`` (provenance + the separately-stored SHA-256),
-        ``manifest.sig`` (present only when a signer is configured), and
-        ``CHAIN_OF_CUSTODY.txt`` describing how it was produced.
+        ``manifest.json`` (provenance + the separately-stored SHA-256 of both
+        the evidence and the custody note), ``manifest.sig`` (present only when
+        a signer is configured), and ``CHAIN_OF_CUSTODY.txt`` describing how it
+        was produced.
         """
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
+        # A stale signature from a previous export of this directory would make
+        # an unsigned (or re-signed) bundle verify against the wrong manifest.
+        (out / "manifest.sig").unlink(missing_ok=True)
 
-        records = self._read_records(since, until, event_types)
+        since_dt = _parse_ts(since) if since else None
+        until_dt = _parse_ts(until) if until else None
+
+        records = self._read_records(since_dt, until_dt, event_types)
         evidence_path = out / "evidence.jsonl"
         with open(evidence_path, "w") as f:
             for rec in records:
                 f.write(json.dumps(rec, sort_keys=True) + "\n")
 
         digest = sha256_file(evidence_path)
+        signed = self.signer is not None
         manifest: Dict[str, Any] = {
             "provenance": provenance({"case_id": case_id} if case_id else None),
             "capture_window": {"since": since, "until": until},
@@ -146,11 +185,19 @@ class EvidenceExporter:
             "sha256": digest,
             "hash_algorithm": "SHA-256",
         }
+
+        # Write the custody note first and fold its hash into the manifest, so
+        # the signature covers the custody claims too — otherwise the custody
+        # note could be altered while the bundle still verified.
+        custody_path = out / "CHAIN_OF_CUSTODY.txt"
+        custody_path.write_text(self._custody_note(manifest, signed))
+        manifest["custody_file"] = custody_path.name
+        manifest["custody_sha256"] = sha256_file(custody_path)
+
         manifest_bytes = json.dumps(manifest, indent=2, sort_keys=True).encode()
         (out / "manifest.json").write_bytes(manifest_bytes)
 
-        signed = False
-        if self.signer is not None:
+        if signed:
             signature = {
                 "signature": self.signer.sign_bytes(manifest_bytes),
                 "public_key": self.signer.public_key_b64,
@@ -158,9 +205,7 @@ class EvidenceExporter:
                 "signed_file": "manifest.json",
             }
             (out / "manifest.sig").write_text(json.dumps(signature, indent=2))
-            signed = True
 
-        (out / "CHAIN_OF_CUSTODY.txt").write_text(self._custody_note(manifest, signed))
         manifest["signed"] = signed
         manifest["output_dir"] = str(out)
         return manifest
@@ -190,6 +235,29 @@ class EvidenceExporter:
             "              included public key.",
         ]
         return "\n".join(lines) + "\n"
+
+
+def _confined_file(bundle_root: Path, name: str) -> Optional[Path]:
+    """Resolve ``name`` to a regular file confined to ``bundle_root``.
+
+    Returns None when the name is absolute, escapes the bundle via ``..`` or a
+    symlink, or is not an existing regular file — so a malicious manifest cannot
+    point verification at ``/etc/passwd``, a device, or a file outside the
+    bundle.
+    """
+    candidate = bundle_root / name
+    if candidate.is_symlink():
+        return None
+    try:
+        resolved = candidate.resolve()
+        root = bundle_root.resolve()
+    except OSError:
+        return None
+    if resolved != root and root not in resolved.parents:
+        return None
+    if not resolved.is_file():
+        return None
+    return resolved
 
 
 def verify_bundle(
@@ -227,25 +295,47 @@ def verify_bundle(
         _add("manifest_parse", False, f"manifest.json is not valid JSON: {e}")
         return {"ok": False, "checks": checks}
 
-    evidence_path = d / manifest.get("evidence_file", "evidence.jsonl")
-    if not evidence_path.exists():
-        _add("evidence_present", False, f"{evidence_path.name} not found")
+    evidence_name = manifest.get("evidence_file", "evidence.jsonl")
+    evidence_path = _confined_file(d, evidence_name)
+    if evidence_path is None:
+        _add("evidence_present", False, f"{evidence_name!r} missing or outside the bundle")
     else:
-        content = evidence_path.read_bytes()
-        actual = hashlib.sha256(content).hexdigest()
+        # Stream the file: hash and count non-empty lines in one bounded pass,
+        # so a huge evidence file cannot exhaust memory during verification.
+        digest = hashlib.sha256()
+        line_count = 0
+        with open(evidence_path, "rb") as fh:
+            for line in fh:
+                digest.update(line)
+                if line.strip():
+                    line_count += 1
+        actual = digest.hexdigest()
         expected = manifest.get("sha256")
         _add(
             "evidence_sha256", actual == expected,
             "hash matches manifest" if actual == expected
             else f"expected {expected}, got {actual}",
         )
-        line_count = sum(1 for line in content.splitlines() if line.strip())
         expected_count = manifest.get("record_count")
         _add(
             "record_count", line_count == expected_count,
             f"{line_count} record(s)" if line_count == expected_count
             else f"expected {expected_count}, found {line_count}",
         )
+
+    # Verify the custody note is the one covered by the (signed) manifest.
+    custody_expected = manifest.get("custody_sha256")
+    if custody_expected is not None:
+        custody_path = _confined_file(d, manifest.get("custody_file", "CHAIN_OF_CUSTODY.txt"))
+        if custody_path is None:
+            _add("custody_sha256", False, "custody note missing or outside the bundle")
+        else:
+            custody_actual = sha256_file(custody_path)
+            _add(
+                "custody_sha256", custody_actual == custody_expected,
+                "custody note matches manifest" if custody_actual == custody_expected
+                else "custody note does NOT match manifest",
+            )
 
     sig_path = d / "manifest.sig"
     if not sig_path.exists():

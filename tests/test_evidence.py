@@ -70,11 +70,18 @@ def test_export_signs_manifest_when_signer_given(tmp_path):
     assert AuditLog.verify_bytes(manifest_bytes + b" ", sig["signature"], sig["public_key"]) is False
 
 
-def test_export_missing_log_is_empty_bundle(tmp_path):
+def test_export_fails_closed_on_missing_log(tmp_path):
     out = tmp_path / "bundle"
-    manifest = EvidenceExporter(str(tmp_path / "nope.jsonl")).export(str(out))
-    assert manifest["record_count"] == 0
-    assert (out / "evidence.jsonl").read_text() == ""
+    with pytest.raises(FileNotFoundError):
+        EvidenceExporter(str(tmp_path / "nope.jsonl")).export(str(out))
+
+
+def test_export_fails_closed_on_malformed_line(tmp_path):
+    log = tmp_path / "forensic.jsonl"
+    log.write_text('{"type": "detection", "data": {}}\nnot json\n')
+    out = tmp_path / "bundle"
+    with pytest.raises(ValueError, match=":2"):  # reports the bad line number
+        EvidenceExporter(str(log)).export(str(out))
 
 
 def test_provenance_has_tool_version_and_timestamp():
@@ -173,3 +180,25 @@ def test_verify_bundle_requires_signature_when_key_expected(tmp_path):
     report = verify_bundle(str(out), expected_public_key="c29tZS1rZXk=")
     assert report["ok"] is False
     assert any(c["name"] == "manifest_signature" and not c["passed"] for c in report["checks"])
+
+
+def test_verify_bundle_detects_tampered_custody_note(tmp_path):
+    out = _make_bundle(tmp_path, signed=True)
+    # The custody note is covered by the signed manifest, so editing it fails.
+    (out / "CHAIN_OF_CUSTODY.txt").write_text("Case ID: forged\n")
+    report = verify_bundle(str(out))
+    assert report["ok"] is False
+    assert any(c["name"] == "custody_sha256" and not c["passed"] for c in report["checks"])
+
+
+def test_verify_bundle_rejects_evidence_file_outside_bundle(tmp_path):
+    out = _make_bundle(tmp_path, signed=False)
+    # Point evidence_file outside the bundle (path traversal).
+    secret = tmp_path / "secret.txt"
+    secret.write_text("top secret")
+    manifest = json.loads((out / "manifest.json").read_text())
+    manifest["evidence_file"] = "../secret.txt"
+    (out / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True))
+    report = verify_bundle(str(out))
+    assert report["ok"] is False
+    assert any(c["name"] == "evidence_present" and not c["passed"] for c in report["checks"])

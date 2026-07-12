@@ -1,3 +1,4 @@
+import base64
 import json
 import ssl
 
@@ -72,6 +73,28 @@ def test_verify_detailed_localizes_tampered_record(tmp_path):
     assert entry["id"] in flagged
     assert good1 not in flagged
     assert good3 not in flagged
+
+
+def test_verify_detailed_isolates_bad_signature_without_cascading(tmp_path):
+    audit = AuditLog(log_path=str(tmp_path / "audit"))
+    audit.log("detection", {"id": "x1"})
+    audit.log("detection", {"id": "x2"})  # signature will be corrupted
+    audit.log("detection", {"id": "x3"})
+
+    log_file = next((tmp_path / "audit").glob("audit_*.log"))
+    lines = log_file.read_text().splitlines()
+    entry = json.loads(lines[1])
+    # Corrupt only the signature; the content hash still matches the data.
+    entry["signature"] = base64.b64encode(b"not a real signature").decode()
+    lines[1] = json.dumps(entry)
+    log_file.write_text("\n".join(lines) + "\n")
+
+    report = AuditLog(log_path=str(tmp_path / "audit")).verify_detailed()
+    assert report["ok"] is False
+    # Exactly the middle record is flagged; the chain does not cascade to x3.
+    flagged = {(e["id"], e["reason"]) for e in report["errors"]}
+    assert any(eid == entry["id"] and "signature" in reason for eid, reason in flagged)
+    assert not any(reason == "hash chain break" for _eid, reason in flagged)
 
 
 def test_sign_and_verify_bytes_round_trip(tmp_path):

@@ -122,22 +122,34 @@ class AuditLog:
                     try:
                         sig = base64.b64decode(entry.pop("signature"))
                         stored_hash = bytes.fromhex(entry.pop("hash"))
-                        recomputed = hashlib.sha256(
-                            json.dumps(entry, sort_keys=True).encode()
-                        ).digest()
-                        if recomputed != stored_hash:
-                            errors.append({**loc, "id": entry_id, "reason": "content hash mismatch"})
-                        else:
+                    except Exception as e:  # missing/malformed hash or signature
+                        errors.append(
+                            {**loc, "id": entry_id, "reason": f"malformed hash/signature: {e}"}
+                        )
+                        # No trustworthy stored hash to resync from; the next
+                        # entry's chain check will flag the gap.
+                        continue
+
+                    recomputed = hashlib.sha256(
+                        json.dumps(entry, sort_keys=True).encode()
+                    ).digest()
+                    if recomputed != stored_hash:
+                        errors.append({**loc, "id": entry_id, "reason": "content hash mismatch"})
+                    else:
+                        try:
                             self._verifying_key.verify(
                                 sig, recomputed, ec.ECDSA(hashes.SHA512())
                             )
-                        if not chain_ok:
-                            errors.append({**loc, "id": entry_id, "reason": "hash chain break"})
-                        # Resync to this entry so later records are judged on
-                        # their own linkage, not the earlier break.
-                        prev_hash = hashlib.sha256(prev_hash + stored_hash).digest()
-                    except Exception as e:  # bad signature / malformed fields
-                        errors.append({**loc, "id": entry_id, "reason": f"{type(e).__name__}: {e}"})
+                        except Exception as e:
+                            errors.append(
+                                {**loc, "id": entry_id, "reason": f"invalid signature: {e}"}
+                            )
+                    if not chain_ok:
+                        errors.append({**loc, "id": entry_id, "reason": "hash chain break"})
+                    # Always resync to this entry's stored hash so one bad record
+                    # is isolated instead of cascading into every record after it
+                    # (including when the signature check above failed).
+                    prev_hash = hashlib.sha256(prev_hash + stored_hash).digest()
         return {"ok": not errors, "entries_checked": checked, "errors": errors}
 
     def sign_bytes(self, data: bytes) -> str:
@@ -176,9 +188,7 @@ class AuditLog:
 
     def export_for_forensics(self, output_path: str):
         """Write all log entries plus the public key and chain hash to a file."""
-        pub_key = base64.b64encode(
-            self._verifying_key.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
-        ).decode()
+        pub_key = self.public_key_b64
         with open(output_path, "w") as out:
             out.write(f"# TIGRESS Audit Export\n# Public Key: {pub_key}\n# Node: {self.node_id}\n\n")
             for log_file in sorted(self.log_path.glob("audit_*.log")):

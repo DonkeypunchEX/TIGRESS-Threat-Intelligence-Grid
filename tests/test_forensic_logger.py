@@ -52,6 +52,38 @@ def test_rotation_signs_sidecar_when_signer_given(tmp_path):
     ) is True
 
 
+def test_concurrent_writes_across_rotation_lose_nothing(tmp_path):
+    import threading
+
+    log_path = tmp_path / "forensic.jsonl"
+    logger = ForensicLogger(str(log_path), max_bytes=200)  # force many rotations
+
+    threads_n, per_thread = 8, 40
+
+    def writer(tid):
+        for i in range(per_thread):
+            logger.log("detection", {"tid": tid, "i": i})
+
+    threads = [threading.Thread(target=writer, args=(t,)) for t in range(threads_n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # Gather every record from the active log plus all rotated files.
+    seen = set()
+    for path in [log_path, *tmp_path.glob("forensic_*.jsonl")]:
+        if path.suffix == ".sha256":
+            continue
+        for line in path.read_text().splitlines():
+            if line.strip():
+                rec = json.loads(line)  # each line must remain valid JSON
+                seen.add((rec["data"]["tid"], rec["data"]["i"]))
+
+    expected = {(t, i) for t in range(threads_n) for i in range(per_thread)}
+    assert seen == expected  # no lost or corrupted entries under concurrent rotation
+
+
 def test_retention_prunes_old_rotated_files(tmp_path):
     log_path = tmp_path / "forensic.jsonl"
     logger = ForensicLogger(str(log_path), max_bytes=80, retention_days=1)

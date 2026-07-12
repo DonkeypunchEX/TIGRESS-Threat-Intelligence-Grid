@@ -145,7 +145,9 @@ def run_selftest(record_dir: Optional[str] = None) -> Dict[str, Any]:
 def latest_validation(record_dir: str) -> Optional[Dict[str, Any]]:
     """Return the most recent validation record in ``record_dir``, or None."""
     rec_dir = Path(record_dir)
-    records = sorted(rec_dir.glob("validation_*.json"))
+    # Sort by mtime, not filename: the filename embeds the version before the
+    # timestamp, so alphabetic order misranks records across versions.
+    records = sorted(rec_dir.glob("validation_*.json"), key=lambda p: p.stat().st_mtime)
     if not records:
         return None
     try:

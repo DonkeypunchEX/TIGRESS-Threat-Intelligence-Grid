@@ -13,7 +13,7 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -55,6 +55,12 @@ class ForensicLogger:
         # rotate() (rename + sidecar + prune) must not interleave with another
         # thread's append or a concurrent rotation.
         self._lock = threading.Lock()
+        if self.retention_days > 0 and self.max_bytes <= 0:
+            logger.warning(
+                "forensic retention_days=%d is set but max_bytes=0; rotation "
+                "(and therefore pruning) never triggers automatically.",
+                self.retention_days,
+            )
 
     def log(self, event_type: str, data: Dict[str, Any]):
         """Append one fsynced JSONL record, rotating first if needed."""
@@ -91,7 +97,9 @@ class ForensicLogger:
         """Rotate implementation; the caller must hold ``self._lock``."""
         if not self.log_path.exists() or self.log_path.stat().st_size == 0:
             return None
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # UTC, consistent with provenance() and AuditLog timestamps, so
+        # chain-of-custody filenames are unambiguous across hosts/DST.
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         rotated = self.log_path.with_name(
             f"{self.log_path.stem}_{stamp}{self.log_path.suffix}"
         )
