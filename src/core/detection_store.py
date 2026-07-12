@@ -11,6 +11,9 @@ import threading
 from collections import deque
 from typing import Any, Deque, Dict, List, Optional
 
+#: Hard cap on how many detections a single query may return.
+MAX_LIMIT = 1000
+
 
 class DetectionStore:
     """Keeps the most recent detections (as plain dicts) for querying."""
@@ -44,6 +47,7 @@ class DetectionStore:
         """
         if limit <= 0:
             return []
+        limit = min(int(limit), MAX_LIMIT)  # bound the result set
         with self._lock:
             items = list(self._items)
 

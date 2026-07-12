@@ -13,6 +13,15 @@ def test_recent_returns_newest_first():
     assert ids == ["b", "a"]
 
 
+def test_recent_caps_limit(monkeypatch):
+    import src.core.detection_store as ds
+    monkeypatch.setattr(ds, "MAX_LIMIT", 2)
+    store = ds.DetectionStore()
+    for i in range(4):
+        store.add(_det(1, did=str(i)))
+    assert len(store.recent(limit=10_000_000)) == 2  # bounded, not 4
+
+
 def test_recent_respects_limit_and_zero():
     store = DetectionStore()
     for i in range(5):

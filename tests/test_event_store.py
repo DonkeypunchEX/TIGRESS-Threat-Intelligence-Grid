@@ -84,6 +84,15 @@ def test_persists_across_reopen(tmp_path):
     assert len(reopened.recent(event_type="detection")) == 2
 
 
+def test_recent_caps_limit(tmp_path, monkeypatch):
+    import src.core.event_store as es
+    monkeypatch.setattr(es, "MAX_LIMIT", 2)
+    store = es.EventStore(str(tmp_path / "events.db"))
+    for i in range(4):
+        store.record("detection", {"id": str(i), "severity": 1})
+    assert len(store.recent(limit=10_000_000)) == 2  # bounded, not 4
+
+
 def test_null_store_is_inert():
     store = NullEventStore()
     store.record("detection", {"severity": 4})

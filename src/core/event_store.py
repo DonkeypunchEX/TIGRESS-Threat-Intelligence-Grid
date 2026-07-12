@@ -33,10 +33,15 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(type);
 CREATE INDEX IF NOT EXISTS idx_events_severity ON events(severity);
+CREATE INDEX IF NOT EXISTS idx_events_sensor_type ON events(sensor_type);
 """
 
 #: Allowed analytics time buckets → the ISO-timestamp prefix length to group on.
 _BUCKETS = {"hour": 13, "day": 10, "month": 7}
+
+#: Hard cap on how many rows a single query may return, so an authenticated
+#: caller cannot pull an unbounded result set into memory.
+MAX_LIMIT = 1000
 
 
 class EventStore:
@@ -101,7 +106,7 @@ class EventStore:
     ) -> List[Dict[str, Any]]:
         """Return up to ``limit`` matching events, newest first."""
         where, params = self._filters(event_type, min_severity, sensor_type, since, until, text)
-        params.append(max(1, int(limit)))
+        params.append(min(max(1, int(limit)), MAX_LIMIT))
         # `where` is built only from static "col ? " fragments; all values are
         # bound parameters, so this is not user-controlled SQL.
         sql = f"SELECT * FROM events {where} ORDER BY id DESC LIMIT ?"  # nosec B608
