@@ -219,6 +219,33 @@ def test_from_config_async_dispatch_starts_workers():
     assert not disp._workers  # cleaned up
 
 
+def test_shutdown_does_not_block_on_full_queue_with_slow_channel():
+    import threading
+    import time
+
+    release = threading.Event()
+
+    class _Slow(AlertChannel):
+        name = "slow"
+
+        def send(self, title, content, severity):
+            release.wait(timeout=2)
+            return True
+
+    # queue_size=1 with a worker wedged on the slow channel keeps the queue full.
+    disp = AlertDispatcher([_Slow()], async_workers=1, queue_size=1)
+    for _ in range(5):
+        disp.submit("t", "c", severity=5)
+
+    start = time.monotonic()
+    disp.shutdown(timeout=0.2)  # must not wait on the wedged worker/full queue
+    elapsed = time.monotonic() - start
+    release.set()
+
+    assert elapsed < 1.5
+    assert disp._queue is None  # subsequent submit() falls back to synchronous
+
+
 # --------------------------------------------------------------------------- #
 # EmailChannel
 # --------------------------------------------------------------------------- #

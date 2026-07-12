@@ -228,9 +228,12 @@ class AlertDispatcher:
 
     def _worker_loop(self) -> None:
         """Deliver queued alerts until a ``None`` sentinel is received."""
-        assert self._queue is not None
+        # Bind the queue locally so a concurrent shutdown() that clears
+        # self._queue can never turn the next get() into an AttributeError.
+        q = self._queue
+        assert q is not None
         while True:
-            item = self._queue.get()
+            item = q.get()
             try:
                 if item is None:  # shutdown sentinel
                     return
@@ -239,7 +242,7 @@ class AlertDispatcher:
             except Exception as e:  # a bad alert must not kill the worker
                 logger.error(f"Alert worker error: {e}")
             finally:
-                self._queue.task_done()
+                q.task_done()
 
     def submit(self, title: str, content: str, severity: int = 3) -> None:
         """Fire-and-forget delivery.
@@ -263,12 +266,24 @@ class AlertDispatcher:
     def shutdown(self, timeout: float = 5) -> None:
         """Drain queued alerts and stop the background workers.
 
-        Idempotent and safe to call when running synchronously (no-op).
+        Idempotent and safe to call when running synchronously (no-op). Sentinel
+        puts never block indefinitely: workers drain the queue, so on a full
+        queue we wait at most ``timeout`` for room. Workers hold their own queue
+        reference, so clearing ``self._queue`` here cannot crash a straggler.
         """
-        if self._queue is None:
+        q = self._queue
+        if q is None:
             return
         for _ in self._workers:
-            self._queue.put(None)
+            try:
+                q.put_nowait(None)
+            except queue.Full:
+                # Workers are consuming; wait briefly for space, then give up
+                # (they are daemon threads and are reaped at process exit).
+                try:
+                    q.put(None, timeout=timeout)
+                except queue.Full:
+                    break
         for t in self._workers:
             t.join(timeout=timeout)
         self._workers = []
