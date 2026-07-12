@@ -144,3 +144,32 @@ def test_verify_bundle_missing_manifest(tmp_path):
     empty.mkdir()
     report = verify_bundle(str(empty))
     assert report["ok"] is False
+
+
+def test_verify_bundle_pins_expected_public_key(tmp_path):
+    pytest.importorskip("cryptography")
+    from src.security.audit_log import AuditLog
+
+    log = tmp_path / "forensic.jsonl"
+    _write_log(log, [{"type": "detection", "data": {"id": "a"}}])
+    out = tmp_path / "bundle"
+    signer = AuditLog(log_path=str(tmp_path / "audit"))
+    EvidenceExporter(str(log), signer=signer).export(str(out))
+
+    # Correct key -> pinned check passes.
+    ok = verify_bundle(str(out), expected_public_key=signer.public_key_b64)
+    assert ok["ok"] is True
+    assert any(c["name"] == "public_key_pinned" and c["passed"] for c in ok["checks"])
+
+    # A different (attacker) key -> pin fails even though the signature is valid.
+    other = AuditLog(log_path=str(tmp_path / "audit2"))
+    bad = verify_bundle(str(out), expected_public_key=other.public_key_b64)
+    assert bad["ok"] is False
+    assert any(c["name"] == "public_key_pinned" and not c["passed"] for c in bad["checks"])
+
+
+def test_verify_bundle_requires_signature_when_key_expected(tmp_path):
+    out = _make_bundle(tmp_path, signed=False)  # unsigned bundle
+    report = verify_bundle(str(out), expected_public_key="c29tZS1rZXk=")
+    assert report["ok"] is False
+    assert any(c["name"] == "manifest_signature" and not c["passed"] for c in report["checks"])

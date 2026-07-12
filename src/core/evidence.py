@@ -192,13 +192,22 @@ class EvidenceExporter:
         return "\n".join(lines) + "\n"
 
 
-def verify_bundle(bundle_dir: str) -> Dict[str, Any]:
+def verify_bundle(
+    bundle_dir: str, expected_public_key: Optional[str] = None
+) -> Dict[str, Any]:
     """Re-verify an exported evidence bundle's integrity.
 
     Recomputes the SHA-256 of ``evidence.jsonl`` against ``manifest.json``,
     checks the record count, and — when ``manifest.sig`` is present — verifies
     the ECDSA signature over the manifest. Returns ``{"ok", "checks"}`` where
     each check is ``{"name", "passed", "detail"}``.
+
+    A valid signature alone only proves the manifest is internally consistent
+    with *whatever* key ships in the bundle — an attacker who edits the evidence
+    can re-sign with their own key. Pass ``expected_public_key`` (the trusted
+    signer's base64 key, e.g. ``AuditLog.public_key_b64``) to also require the
+    bundle to be signed by that specific key, which is what establishes
+    authenticity.
     """
     d = Path(bundle_dir)
     checks: List[Dict[str, Any]] = []
@@ -222,16 +231,15 @@ def verify_bundle(bundle_dir: str) -> Dict[str, Any]:
     if not evidence_path.exists():
         _add("evidence_present", False, f"{evidence_path.name} not found")
     else:
-        actual = sha256_file(evidence_path)
+        content = evidence_path.read_bytes()
+        actual = hashlib.sha256(content).hexdigest()
         expected = manifest.get("sha256")
         _add(
             "evidence_sha256", actual == expected,
             "hash matches manifest" if actual == expected
             else f"expected {expected}, got {actual}",
         )
-        line_count = sum(
-            1 for line in evidence_path.read_text().splitlines() if line.strip()
-        )
+        line_count = sum(1 for line in content.splitlines() if line.strip())
         expected_count = manifest.get("record_count")
         _add(
             "record_count", line_count == expected_count,
@@ -241,7 +249,12 @@ def verify_bundle(bundle_dir: str) -> Dict[str, Any]:
 
     sig_path = d / "manifest.sig"
     if not sig_path.exists():
-        _add("manifest_signature", True, "unsigned bundle (no manifest.sig)")
+        # An unsigned bundle cannot be authenticated; only pass when the caller
+        # did not require a specific signer.
+        if expected_public_key:
+            _add("manifest_signature", False, "expected a signed bundle, but manifest.sig is missing")
+        else:
+            _add("manifest_signature", True, "unsigned bundle (no manifest.sig)")
     else:
         try:
             sig = json.loads(sig_path.read_text())
@@ -253,6 +266,13 @@ def verify_bundle(bundle_dir: str) -> Dict[str, Any]:
                 "manifest_signature", ok,
                 "signature valid" if ok else "signature does NOT match manifest.json",
             )
+            if expected_public_key is not None:
+                pinned = sig.get("public_key") == expected_public_key
+                _add(
+                    "public_key_pinned", pinned,
+                    "signed by the expected key" if pinned
+                    else "signed by an UNEXPECTED key (not the trusted signer)",
+                )
         except Exception as e:  # malformed sig file or missing crypto
             _add("manifest_signature", False, f"could not verify signature: {e}")
 

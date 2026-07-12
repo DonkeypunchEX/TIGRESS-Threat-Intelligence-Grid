@@ -198,7 +198,11 @@ when present:
 ```bash
 python scripts/verify_bundle.py ./bundle
 ```
-It exits non-zero if any check fails, so it can gate an evidence handoff.
+It exits non-zero if any check fails, so it can gate an evidence handoff. A valid
+signature alone only proves the bundle is internally consistent with whatever key
+it ships — pass `--public-key <base64>` (the trusted signer's
+`AuditLog.public_key_b64`) to also require it was signed by that specific key,
+which is what establishes authenticity.
 
 ## Self-Validation
 Validate the detector against a frozen golden dataset and record the result —

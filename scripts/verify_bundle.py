@@ -25,9 +25,14 @@ def main():
     """Verify the bundle and print each check; exit 1 on any failure."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("bundle_dir", help="Path to the evidence bundle directory")
+    parser.add_argument(
+        "--public-key", default=None,
+        help="Require the bundle to be signed by this base64 public key "
+             "(establishes authenticity, not just integrity)",
+    )
     args = parser.parse_args()
 
-    report = verify_bundle(args.bundle_dir)
+    report = verify_bundle(args.bundle_dir, expected_public_key=args.public_key)
     for check in report["checks"]:
         mark = "PASS" if check["passed"] else "FAIL"
         print(f"  [{mark}] {check['name']}: {check['detail']}")

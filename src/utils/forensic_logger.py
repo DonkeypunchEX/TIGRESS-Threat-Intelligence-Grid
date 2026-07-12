@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import os
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -50,32 +51,44 @@ class ForensicLogger:
         self.max_bytes = int(max_bytes)
         self.retention_days = int(retention_days)
         self.signer = signer
+        # Serialize writes and rotation: sensors run on separate threads, so a
+        # rotate() (rename + sidecar + prune) must not interleave with another
+        # thread's append or a concurrent rotation.
+        self._lock = threading.Lock()
 
     def log(self, event_type: str, data: Dict[str, Any]):
         """Append one fsynced JSONL record, rotating first if needed."""
         entry = json.dumps({"type": event_type, "data": data})
         line = entry + "\n"
-        self._maybe_rotate(len(line.encode()))
-        try:
-            with open(self.log_path, "a") as f:
-                f.write(line)
-                f.flush()
-                os.fsync(f.fileno())
-        except OSError as e:
-            logger.error(f"Forensic log write failed: {e}")
+        with self._lock:
+            self._maybe_rotate(len(line.encode()))
+            try:
+                with open(self.log_path, "a") as f:
+                    f.write(line)
+                    f.flush()
+                    os.fsync(f.fileno())
+            except OSError as e:
+                logger.error(f"Forensic log write failed: {e}")
 
     def _maybe_rotate(self, incoming_bytes: int):
+        # Caller (log) already holds self._lock.
         if self.max_bytes <= 0 or not self.log_path.exists():
             return
         if self.log_path.stat().st_size + incoming_bytes <= self.max_bytes:
             return
-        self.rotate()
+        self._rotate_locked()
 
     def rotate(self) -> Optional[Path]:
         """Rotate the active log to a dated file with a detached hash sidecar.
 
-        Returns the rotated file path, or None if there was nothing to rotate.
+        Thread-safe. Returns the rotated file path, or None if there was
+        nothing to rotate.
         """
+        with self._lock:
+            return self._rotate_locked()
+
+    def _rotate_locked(self) -> Optional[Path]:
+        """Rotate implementation; the caller must hold ``self._lock``."""
         if not self.log_path.exists() or self.log_path.stat().st_size == 0:
             return None
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
