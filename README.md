@@ -136,6 +136,12 @@ sensor keeps in memory. `alerting.history_size` (default 500) caps how many
 recent detections are held in memory for the `/detections` API. Detection rules
 live in `config/rules.yaml`.
 
+The forensic log can rotate and self-prune: `alerting.forensic_max_bytes`
+(default 0 = never) rotates the active log under a dated filename once it would
+exceed that size, writing a detached `<file>.sha256` sidecar (the hash stored
+*separately* from the data), and `alerting.forensic_retention_days` (default 0 =
+keep forever) prunes rotated logs older than the window.
+
 ## Runtime Protection
 Running with `--secure` verifies the boot manifest and starts runtime integrity
 monitoring: critical-file hashing and debugger detection, plus optional
@@ -163,8 +169,44 @@ Logs are written to `data/audit/audit_YYYYMMDD.log`. Each entry is ECDSA-signed
 and hash-chained. Verify integrity:
 ```python
 from src.security.audit_log import AuditLog
-print(AuditLog().verify_integrity())
+audit = AuditLog()
+print(audit.verify_integrity())        # True/False
+
+# Localize corruption instead of a bare pass/fail: verify_detailed() checks
+# each record independently and reports exactly which are suspect, so one
+# tampered entry does not invalidate everything after it.
+report = audit.verify_detailed()
+print(report["ok"], report["entries_checked"], report["errors"])
 ```
+
+## Evidence Export
+Package forensic records into a self-contained, tamper-evident bundle for
+handoff or retention, following NIST IR 8387 / NIJ digital-evidence-preservation
+practice — a NIST-approved SHA-256 recorded in a manifest **stored separately**
+from the data, an optional ECDSA signature, and a documented chain of custody
+(producing tool + version, host, capture window):
+```bash
+python scripts/export_evidence.py --out ./bundle \
+  --forensic-log data/alerts/forensic.jsonl \
+  --since 2026-01-01T00:00:00+00:00 --types detection --case-id CASE-123 --sign
+```
+The bundle contains `evidence.jsonl`, `manifest.json` (provenance + the
+separately-stored hash), `manifest.sig` (when `--sign` is used), and
+`CHAIN_OF_CUSTODY.txt`. Verify by recomputing the SHA-256 of `evidence.jsonl`
+against `manifest.json`, then checking `manifest.sig` against its public key.
+
+## Self-Validation
+Validate the detector against a frozen golden dataset and record the result —
+the NIJ practice of validating a forensic tool against a known dataset,
+retaining the report, and revalidating after every update:
+```bash
+python scripts/selftest.py --record-dir data/validation
+```
+It runs the real engine over the golden dataset, confirms the expected
+detections fire, writes a versioned `validation_<version>_<timestamp>.json`
+record, and exits non-zero on any failure (usable as a CI/release gate).
+`src.core.selftest.needs_revalidation(dir)` reports when the latest record is
+missing, failed, or was produced by a different version.
 
 ## Development & Testing
 ```bash

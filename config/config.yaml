@@ -40,6 +40,8 @@ alerting:
   notification: true
   log_file: data/alerts/tigress.log
   forensic_log: data/alerts/forensic.jsonl
+  forensic_max_bytes: 0      # rotate the forensic log past this size (0 = never); writes a detached .sha256 sidecar
+  forensic_retention_days: 0 # prune rotated forensic logs older than this (0 = keep forever)
   history_size: 500          # recent detections kept in memory for the API
   async_dispatch: true       # deliver alerts on background threads (never block detection)
   async_workers: 2           # number of background delivery threads

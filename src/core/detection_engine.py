@@ -54,7 +54,9 @@ class DetectionEngine:
         self._rules = ConfigLoader.load_yaml(det.get("rules_file", "config/rules.yaml"))
         alerting = self.config.get("alerting", {})
         self.forensic = ForensicLogger(
-            alerting.get("forensic_log", "data/alerts/forensic.jsonl")
+            alerting.get("forensic_log", "data/alerts/forensic.jsonl"),
+            max_bytes=alerting.get("forensic_max_bytes", 0),
+            retention_days=alerting.get("forensic_retention_days", 0),
         )
         self.history = DetectionStore(max_size=alerting.get("history_size", 500))
         self.alerts = AlertDispatcher.from_config(alerting)
