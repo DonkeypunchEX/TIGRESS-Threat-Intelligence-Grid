@@ -190,3 +190,70 @@ class EvidenceExporter:
             "              included public key.",
         ]
         return "\n".join(lines) + "\n"
+
+
+def verify_bundle(bundle_dir: str) -> Dict[str, Any]:
+    """Re-verify an exported evidence bundle's integrity.
+
+    Recomputes the SHA-256 of ``evidence.jsonl`` against ``manifest.json``,
+    checks the record count, and — when ``manifest.sig`` is present — verifies
+    the ECDSA signature over the manifest. Returns ``{"ok", "checks"}`` where
+    each check is ``{"name", "passed", "detail"}``.
+    """
+    d = Path(bundle_dir)
+    checks: List[Dict[str, Any]] = []
+
+    def _add(name: str, passed: bool, detail: str) -> None:
+        checks.append({"name": name, "passed": bool(passed), "detail": detail})
+
+    manifest_path = d / "manifest.json"
+    if not manifest_path.exists():
+        _add("manifest_present", False, f"{manifest_path} not found")
+        return {"ok": False, "checks": checks}
+
+    manifest_bytes = manifest_path.read_bytes()
+    try:
+        manifest = json.loads(manifest_bytes)
+    except json.JSONDecodeError as e:
+        _add("manifest_parse", False, f"manifest.json is not valid JSON: {e}")
+        return {"ok": False, "checks": checks}
+
+    evidence_path = d / manifest.get("evidence_file", "evidence.jsonl")
+    if not evidence_path.exists():
+        _add("evidence_present", False, f"{evidence_path.name} not found")
+    else:
+        actual = sha256_file(evidence_path)
+        expected = manifest.get("sha256")
+        _add(
+            "evidence_sha256", actual == expected,
+            "hash matches manifest" if actual == expected
+            else f"expected {expected}, got {actual}",
+        )
+        line_count = sum(
+            1 for line in evidence_path.read_text().splitlines() if line.strip()
+        )
+        expected_count = manifest.get("record_count")
+        _add(
+            "record_count", line_count == expected_count,
+            f"{line_count} record(s)" if line_count == expected_count
+            else f"expected {expected_count}, found {line_count}",
+        )
+
+    sig_path = d / "manifest.sig"
+    if not sig_path.exists():
+        _add("manifest_signature", True, "unsigned bundle (no manifest.sig)")
+    else:
+        try:
+            sig = json.loads(sig_path.read_text())
+            from src.security.audit_log import AuditLog
+            ok = AuditLog.verify_bytes(
+                manifest_bytes, sig["signature"], sig["public_key"]
+            )
+            _add(
+                "manifest_signature", ok,
+                "signature valid" if ok else "signature does NOT match manifest.json",
+            )
+        except Exception as e:  # malformed sig file or missing crypto
+            _add("manifest_signature", False, f"could not verify signature: {e}")
+
+    return {"ok": all(c["passed"] for c in checks), "checks": checks}

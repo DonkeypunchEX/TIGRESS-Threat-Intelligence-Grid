@@ -192,8 +192,13 @@ python scripts/export_evidence.py --out ./bundle \
 ```
 The bundle contains `evidence.jsonl`, `manifest.json` (provenance + the
 separately-stored hash), `manifest.sig` (when `--sign` is used), and
-`CHAIN_OF_CUSTODY.txt`. Verify by recomputing the SHA-256 of `evidence.jsonl`
-against `manifest.json`, then checking `manifest.sig` against its public key.
+`CHAIN_OF_CUSTODY.txt`. Verify a bundle independently — recomputes the evidence
+hash against the manifest, checks the record count, and validates the signature
+when present:
+```bash
+python scripts/verify_bundle.py ./bundle
+```
+It exits non-zero if any check fails, so it can gate an evidence handoff.
 
 ## Self-Validation
 Validate the detector against a frozen golden dataset and record the result —
@@ -206,7 +211,10 @@ It runs the real engine over the golden dataset, confirms the expected
 detections fire, writes a versioned `validation_<version>_<timestamp>.json`
 record, and exits non-zero on any failure (usable as a CI/release gate).
 `src.core.selftest.needs_revalidation(dir)` reports when the latest record is
-missing, failed, or was produced by a different version.
+missing, failed, or was produced by a different version. On startup the
+dashboard logs a warning when no current passing validation exists (records are
+read from `app.validation_dir`, default `data/validation`), nudging you to run
+the self-test before relying on detections.
 
 ## Development & Testing
 ```bash

@@ -2,7 +2,12 @@ import json
 
 import pytest
 
-from src.core.evidence import EvidenceExporter, provenance, sha256_file
+from src.core.evidence import (
+    EvidenceExporter,
+    provenance,
+    sha256_file,
+    verify_bundle,
+)
 
 
 def _write_log(path, records):
@@ -78,3 +83,64 @@ def test_provenance_has_tool_version_and_timestamp():
     assert prov["version"]
     assert prov["case_id"] == "CASE-1"
     assert prov["generated_at"].endswith("+00:00")
+
+
+# --------------------------------------------------------------------------- #
+# verify_bundle
+# --------------------------------------------------------------------------- #
+
+def _make_bundle(tmp_path, signed):
+    log = tmp_path / "forensic.jsonl"
+    _write_log(log, [
+        {"type": "detection", "data": {"id": "a", "severity": 4}},
+        {"type": "detection", "data": {"id": "b", "severity": 2}},
+    ])
+    out = tmp_path / "bundle"
+    signer = None
+    if signed:
+        pytest.importorskip("cryptography")
+        from src.security.audit_log import AuditLog
+        signer = AuditLog(log_path=str(tmp_path / "audit"))
+    EvidenceExporter(str(log), signer=signer).export(str(out))
+    return out
+
+
+def test_verify_bundle_accepts_intact_signed_bundle(tmp_path):
+    out = _make_bundle(tmp_path, signed=True)
+    report = verify_bundle(str(out))
+    assert report["ok"] is True
+    names = {c["name"] for c in report["checks"]}
+    assert {"evidence_sha256", "record_count", "manifest_signature"} <= names
+
+
+def test_verify_bundle_accepts_unsigned_bundle(tmp_path):
+    out = _make_bundle(tmp_path, signed=False)
+    report = verify_bundle(str(out))
+    assert report["ok"] is True
+    sig_check = next(c for c in report["checks"] if c["name"] == "manifest_signature")
+    assert "unsigned" in sig_check["detail"]
+
+
+def test_verify_bundle_detects_tampered_evidence(tmp_path):
+    out = _make_bundle(tmp_path, signed=False)
+    (out / "evidence.jsonl").write_text('{"type": "detection", "data": {"id": "z"}}\n')
+    report = verify_bundle(str(out))
+    assert report["ok"] is False
+    assert any(c["name"] == "evidence_sha256" and not c["passed"] for c in report["checks"])
+
+
+def test_verify_bundle_detects_tampered_signed_manifest(tmp_path):
+    out = _make_bundle(tmp_path, signed=True)
+    manifest = json.loads((out / "manifest.json").read_text())
+    manifest["record_count"] = 99  # edit after signing
+    (out / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True))
+    report = verify_bundle(str(out))
+    assert report["ok"] is False
+    assert any(c["name"] == "manifest_signature" and not c["passed"] for c in report["checks"])
+
+
+def test_verify_bundle_missing_manifest(tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    report = verify_bundle(str(empty))
+    assert report["ok"] is False
