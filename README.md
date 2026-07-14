@@ -55,6 +55,17 @@ detections firing, alerts delivered over HTTP, and the authenticated
 python scripts/demo_end_to_end.py
 ```
 
+## Audio spectrum analysis (Phyphox)
+Offline analyzer for [Phyphox](https://phyphox.org) "Audio Spectrum" exports —
+useful for triaging a suspicious hum or tone. It finds spectral peaks, fits the
+best fundamental `f0` and its harmonic stack (the signature of ordinary
+rotating machinery), and reports only the *non-harmonic residual* as
+potentially interesting. It also warns when the harmonic spacing matches the
+FFT bin width, i.e. when the "stack" may be a quantization artifact.
+```bash
+python scripts/phyphox_harmonics.py /path/to/Audio_Spectrum_export.zip   # or the unzipped folder
+```
+
 ## Dashboard API
 The dashboard exposes read-only JSON endpoints:
 
