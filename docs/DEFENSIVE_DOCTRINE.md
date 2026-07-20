@@ -193,17 +193,30 @@ technique before trusting a detection.
 | Covert-channel awareness | Method M3 | `core/network_ingest.py` |
 | Forensics & evidence integrity | Method M5 | `core/evidence.py`, `utils/forensic_logger.py`, `version.py` |
 
-## Extractable next steps (gaps between doctrine and code)
+## From doctrine to code (implemented)
 
-These are the places where the sources describe something TIGRESS does not yet do:
+The four gaps this review identified between the source doctrine and the code
+have now been closed:
 
-- **I-BAD phase/weight metadata (M2).** Add `phase` and `weight` fields to
-  `Detection` so per-entity behavioural *progression* can be scored, not only
-  per-reading anomaly.
-- **SYN-payload / BPF-band indicators (M3).** Extend `network_ingest.py` to flag
-  inbound SYN packets carrying payloads as tool/TTP-band signals.
-- **Signal-migration discipline (M1).** Audit existing rules in `config/rules.yaml`
-  for multi-behaviour alerts that should be split into single-behaviour signals.
-- **Visibility baseline check (M6).** A self-test that reports which sensors and
-  log sources are actually active before trusting detection coverage
-  (`core/selftest.py` is the natural home).
+- **I-BAD phase/weight metadata (M2).** `Detection` carries optional `phase` and
+  `weight` fields (`core/detection_engine.py`); the correlation engine's
+  `behavioral_progression` rule sums weight across distinct phases per entity and
+  emits a TTP-level meta-detection when an entity progresses through the kill
+  chain (`core/correlation_engine.py`).
+- **SYN-payload covert-channel indicators (M3).** `network_ingest.py` detects the
+  Bvp47 "SYN knock" (a TCP SYN packet carrying a payload) and raises it to the
+  tool/TTP band — even when no IDS signature matched, since covert-channel
+  implants are built to evade signatures.
+- **Signal-migration discipline (M1).** `core/rule_audit.py` +
+  `scripts/audit_rules.py` flag multi-behaviour rules as candidates for splitting
+  into single-behaviour signals. `config/rules.yaml` keeps one intentional
+  multi-behaviour rule, documented inline, with the audit surfacing it rather
+  than silently changing detection coverage.
+- **Visibility baseline check (M6).** `selftest.visibility_report()` +
+  `scripts/visibility.py` report which enabled sensors have live telemetry CLIs
+  and trained models before a green run is trusted (`ok: false` when a sensor is
+  blind).
+
+Rules now also carry `phase`/`weight` metadata so signals feed progression
+scoring, and the `behavioral_progression` correlation rule is the mechanism that
+recombines those single-behaviour signals into higher-order alerts (Liburdi).

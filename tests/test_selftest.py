@@ -38,3 +38,60 @@ def test_needs_revalidation_true_for_stale_version(tmp_path):
         json.dumps({"ok": True, "version": "0.0.1"})
     )
     assert selftest.needs_revalidation(str(tmp_path)) is True
+
+
+# --------------------------------------------------------------------------- #
+# visibility baseline (Hartong: know your coverage before trusting it)
+# --------------------------------------------------------------------------- #
+
+import yaml
+
+
+def _write_config(tmp_path, enabled, models=None, alerting=None):
+    cfg = {
+        "sensors": {"enabled": enabled},
+        "detection": {"ml_models": models or {}},
+        "alerting": alerting if alerting is not None else {"forensic_log": "x.jsonl"},
+    }
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(cfg))
+    return str(path)
+
+
+def test_visibility_flags_missing_cli(tmp_path, monkeypatch):
+    monkeypatch.setattr(selftest.shutil, "which", lambda _c: None)
+    report = selftest.visibility_report(_write_config(tmp_path, ["wifi", "bluetooth"]))
+    assert report["ok"] is False
+    names = {s["name"] for s in report["sensors"]}
+    assert names == {"wifi", "bluetooth"}
+    assert all(not s["cli_available"] for s in report["sensors"])
+    assert any("not on PATH" in w for w in report["warnings"])
+
+
+def test_visibility_ok_when_all_clis_present(tmp_path, monkeypatch):
+    monkeypatch.setattr(selftest.shutil, "which", lambda c: f"/usr/bin/{c}")
+    models = {"wifi": str(tmp_path / "m.pkl")}
+    (tmp_path / "m.pkl").write_text("trained")
+    report = selftest.visibility_report(_write_config(tmp_path, ["wifi"], models=models))
+    assert report["ok"] is True
+    wifi = report["sensors"][0]
+    assert wifi["cli_available"] is True
+    assert wifi["model_trained"] is True
+    assert report["warnings"] == []
+
+
+def test_visibility_warns_on_untrained_model(tmp_path, monkeypatch):
+    monkeypatch.setattr(selftest.shutil, "which", lambda c: f"/usr/bin/{c}")
+    models = {"wifi": str(tmp_path / "missing.pkl")}  # file absent = untrained
+    report = selftest.visibility_report(_write_config(tmp_path, ["wifi"], models=models))
+    assert report["ok"] is True  # untrained model is a warning, not blindness
+    assert any("not trained" in w for w in report["warnings"])
+
+
+def test_visibility_warns_when_no_log_sink(tmp_path, monkeypatch):
+    monkeypatch.setattr(selftest.shutil, "which", lambda c: f"/usr/bin/{c}")
+    report = selftest.visibility_report(
+        _write_config(tmp_path, ["wifi"], alerting={})
+    )
+    assert any("not persisted" in w for w in report["warnings"])
+    assert report["log_sources"] == {"forensic_log": False, "event_db": False}

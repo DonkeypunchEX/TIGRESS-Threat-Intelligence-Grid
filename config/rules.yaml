@@ -1,9 +1,20 @@
+# Detection rules. Each rule is intended to be a single-behaviour "detection
+# signal" (Josh Liburdi's loosely-coupled model): describe one behaviour of
+# interest and let the correlation engine recombine signals into higher-order
+# alerts, rather than stacking behaviours inside one rule. `phase` and `weight`
+# (Jack Crook's I-BAD framing) let the correlation engine score an entity's
+# behavioural progression across kill-chain phases; both are optional and are
+# ignored by the rule matcher itself. Run `python scripts/audit_rules.py` to
+# flag rules that combine multiple behaviours and are candidates for splitting.
+
 wifi_rules:
   - id: ssid_spoof_suspect
     enabled: true
     description: "SSID not in corporate whitelist"
     severity: 3
     confidence: 0.8
+    phase: reconnaissance
+    weight: 1
     conditions:
       - field: SSID
         op: not_contains
@@ -15,6 +26,8 @@ bluetooth_rules:
     description: "Bluetooth device in very close proximity (strong RSSI)"
     severity: 3
     confidence: 0.75
+    phase: proximity
+    weight: 2
     conditions:
       - field: rssi
         op: gt
@@ -24,6 +37,8 @@ bluetooth_rules:
     description: "Bluetooth device name matches a known tracker pattern"
     severity: 4
     confidence: 0.8
+    phase: tracking
+    weight: 3
     conditions:
       - field: name
         op: contains
@@ -35,15 +50,24 @@ bluetooth_rules:
     description: "Device fingerprint matches a known tracker (name pattern or vendor OUI)"
     severity: 4
     confidence: 0.8
+    phase: tracking
+    weight: 3
     conditions:
       - field: is_tracker
         op: eq
         value: true
+  # NOTE: this rule combines two behaviours (randomized MAC + close proximity).
+  # scripts/audit_rules.py flags it as a signal-migration candidate. It is kept
+  # combined deliberately: the rssi gate suppresses the alert flood that a bare
+  # randomized-MAC signal would cause (most modern phones randomize their MAC).
+  # Splitting it is a detection-tuning decision left to the operator.
   - id: ble_randomized_mac_close
     enabled: true
     description: "Randomized-MAC device in close proximity (tracker-like behaviour)"
     severity: 3
     confidence: 0.7
+    phase: evasion
+    weight: 2
     conditions:
       - field: mac_randomized
         op: eq
