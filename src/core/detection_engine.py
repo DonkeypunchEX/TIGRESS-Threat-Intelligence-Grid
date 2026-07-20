@@ -34,7 +34,17 @@ logger = get_logger(__name__)
 
 @dataclass
 class Detection:
-    """A single detection emitted by a rule or the ML model."""
+    """A single detection emitted by a rule or the ML model.
+
+    ``phase`` and ``weight`` implement Jack Crook's I-BAD (Insider Behavioural
+    Anomaly Detection) framing: a detection is tagged with the kill-chain
+    *phase* it belongs to (e.g. ``reconnaissance``, ``tracking``, ``evasion``,
+    ``exfiltration``) and a numeric *weight*. The correlation engine sums
+    weight and counts distinct phases per entity to surface behavioural
+    *progression* — a fundamentally stronger, TTP-level signal than any single
+    per-reading anomaly. Both default to "unscored" so detections that predate
+    the metadata simply do not contribute to progression scoring.
+    """
 
     id: str
     sensor_type: str
@@ -44,6 +54,8 @@ class Detection:
     sensor_id: str
     description: str
     features: Dict[str, Any] = field(default_factory=dict)
+    phase: Optional[str] = None
+    weight: float = 0.0
 
 
 class DetectionEngine:
@@ -212,6 +224,8 @@ class DetectionEngine:
                 timestamp=pd.Timestamp.now(tz="UTC").isoformat(),
                 sensor_id="ml",
                 description=f"ML anomaly detected in {stype} data",
+                phase="anomaly",
+                weight=1.0,
                 features={"isolation_score": float(score)},
             ))
         return detections
@@ -246,6 +260,8 @@ class DetectionEngine:
                         timestamp=pd.Timestamp.now(tz="UTC").isoformat(),
                         sensor_id="wifi_sensor",
                         description=rule.get("description", rule["id"]),
+                        phase=rule.get("phase"),
+                        weight=float(rule.get("weight", 0.0)),
                         features={
                             "rule": rule["id"],
                             "bssid": net.get("BSSID"),
@@ -314,6 +330,8 @@ class DetectionEngine:
                         timestamp=pd.Timestamp.now(tz="UTC").isoformat(),
                         sensor_id="bluetooth_sensor",
                         description=rule.get("description", rule["id"]),
+                        phase=rule.get("phase"),
+                        weight=float(rule.get("weight", 0.0)),
                         features={
                             "rule": rule["id"],
                             "address": (

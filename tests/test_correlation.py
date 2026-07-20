@@ -241,3 +241,58 @@ def test_engine_dispatch_emits_cross_sensor_meta_detection(engine):
     assert corr[0]["features"]["rule"] == "cross_sensor"
     # Every stored detection is tagged with its pyramid level.
     assert all(d["features"].get("pyramid_level") for d in recorded)
+
+
+# --------------------------------------------------------------------------- #
+# behavioural progression (I-BAD phase/weight scoring)
+# --------------------------------------------------------------------------- #
+
+def _phased(address, phase, weight, severity=3):
+    d = _det(address=address, severity=severity)
+    d["phase"] = phase
+    d["weight"] = weight
+    return d
+
+
+def test_progression_fires_across_distinct_phases():
+    eng = _engine(behavioral_progression={
+        "enabled": True, "min_phases": 2, "min_weight": 4, "severity": 5,
+    })
+    # Same entity seen in two phases with cumulative weight 5 >= 4.
+    eng.observe([_phased("AA:BB", "proximity", 2)], now=0)
+    meta = eng.observe([_phased("AA:BB", "evasion", 3)], now=10)
+    prog = [m for m in meta if m["features"]["rule"] == "behavioral_progression"]
+    assert len(prog) == 1
+    assert prog[0]["features"]["entity"] == "bt:aa:bb"
+    assert prog[0]["features"]["phase_count"] == 2
+    assert prog[0]["features"]["total_weight"] == 5
+    assert prog[0]["features"]["pyramid_level"] == PYRAMID_TTP
+
+
+def test_progression_needs_multiple_distinct_phases():
+    eng = _engine(behavioral_progression={
+        "enabled": True, "min_phases": 2, "min_weight": 4,
+    })
+    # Plenty of weight, but all in one phase: not progression.
+    eng.observe([_phased("AA:BB", "tracking", 3)], now=0)
+    meta = eng.observe([_phased("AA:BB", "tracking", 3)], now=10)
+    assert [m for m in meta if m["features"]["rule"] == "behavioral_progression"] == []
+
+
+def test_progression_needs_min_weight():
+    eng = _engine(behavioral_progression={
+        "enabled": True, "min_phases": 2, "min_weight": 6,
+    })
+    eng.observe([_phased("AA:BB", "proximity", 2)], now=0)
+    meta = eng.observe([_phased("AA:BB", "evasion", 2)], now=10)  # weight 4 < 6
+    assert [m for m in meta if m["features"]["rule"] == "behavioral_progression"] == []
+
+
+def test_unscored_detections_do_not_progress():
+    eng = _engine(behavioral_progression={
+        "enabled": True, "min_phases": 2, "min_weight": 1,
+    })
+    # No phase/weight metadata at all → never contributes to progression.
+    eng.observe([_det(address="AA:BB")], now=0)
+    meta = eng.observe([_det(address="AA:BB")], now=10)
+    assert [m for m in meta if m["features"]["rule"] == "behavioral_progression"] == []

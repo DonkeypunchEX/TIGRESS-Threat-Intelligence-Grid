@@ -11,6 +11,7 @@ validation predates the current version.
 
 import hashlib
 import json
+import shutil
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +20,15 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 from src.version import __version__
+
+# Which external CLI each sensor depends on for real telemetry. Hartong's
+# point: detection quality is bounded by visibility, so know which of these are
+# actually present before trusting coverage.
+_SENSOR_CLIS = {
+    "wifi": "termux-wifi-scaninfo",
+    "bluetooth": "termux-bluetooth-scaninfo",
+    "phone": "termux-sensor",
+}
 
 # --------------------------------------------------------------------------- #
 # Frozen golden dataset — changing any of this changes GOLDEN_SHA256 below.
@@ -140,6 +150,70 @@ def run_selftest(record_dir: Optional[str] = None) -> Dict[str, Any]:
         report["record_path"] = str(record_path)
 
     return report
+
+
+def visibility_report(config_path: str = "config/config.yaml") -> Dict[str, Any]:
+    """Report which sensors and log sources are actually active.
+
+    Olaf Hartong's data-driven-detection prerequisite: detection quality is
+    bounded by visibility, so before trusting coverage you must know what is
+    actually feeding the engine. This inspects the config and the runtime
+    environment and reports, per enabled sensor, whether its telemetry CLI is
+    present and whether its ML model has been trained — plus which log sinks are
+    configured. ``ok`` is False when any enabled sensor cannot see (missing CLI)
+    so callers can refuse to trust a green detection run on a blind grid.
+    """
+    from src.utils.config_loader import ConfigLoader
+
+    config = ConfigLoader.load_config(config_path)
+    sensors_cfg = config.get("sensors", {}) or {}
+    enabled = list(sensors_cfg.get("enabled", []) or [])
+    detection = config.get("detection", {}) or {}
+    model_paths = detection.get("ml_models", {}) or {}
+    alerting = config.get("alerting", {}) or {}
+
+    sensors: List[Dict[str, Any]] = []
+    warnings: List[str] = []
+    for name in enabled:
+        cli = _SENSOR_CLIS.get(name)
+        cli_available = bool(cli and shutil.which(cli))
+        model_path = model_paths.get(name)
+        model_trained = bool(model_path and Path(model_path).exists())
+        sensors.append({
+            "name": name,
+            "cli": cli,
+            "cli_available": cli_available,
+            "model_configured": bool(model_path),
+            "model_trained": model_trained,
+        })
+        if cli and not cli_available:
+            warnings.append(
+                f"sensor '{name}' is enabled but '{cli}' is not on PATH — "
+                f"no live telemetry"
+            )
+        if model_path and not model_trained:
+            warnings.append(
+                f"sensor '{name}' ML model not trained ({model_path}) — "
+                f"rule-based detection only until a training pass"
+            )
+
+    log_sources = {
+        "forensic_log": bool(alerting.get("forensic_log")),
+        "event_db": bool(alerting.get("event_db")),
+    }
+    if not any(log_sources.values()):
+        warnings.append("no forensic_log or event_db configured — detections "
+                        "are not persisted for later investigation")
+
+    return {
+        "tool": "TIGRESS",
+        "version": __version__,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "sensors": sensors,
+        "log_sources": log_sources,
+        "warnings": warnings,
+        "ok": not any(s["cli"] and not s["cli_available"] for s in sensors),
+    }
 
 
 def latest_validation(record_dir: str) -> Optional[Dict[str, Any]]:

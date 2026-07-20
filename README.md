@@ -325,6 +325,24 @@ dashboard only logs a warning when no current passing validation exists. Under
 inline, and startup is refused (non-zero exit) if it fails — so a secure
 deployment never serves an unvalidated or broken detector.
 
+## Visibility & Rule Hygiene
+Detection quality is bounded by visibility, so check what is actually feeding
+the engine before trusting a green run:
+```bash
+python scripts/visibility.py          # which sensors have live CLIs + trained models
+python scripts/audit_rules.py         # flag multi-behaviour rules (signal hygiene)
+```
+`visibility.py` exits non-zero when an enabled sensor has no telemetry CLI
+("blind"). `audit_rules.py` enforces Josh Liburdi's single-behaviour "detection
+signal" model, flagging rules that combine behaviours as split candidates
+(`--strict` makes it a CI gate). Rules carry optional `phase`/`weight` metadata
+(Jack Crook's I-BAD framing); the correlation engine's `behavioral_progression`
+rule sums weight across distinct kill-chain phases per entity to recombine
+signals into a TTP-level alert. Network ingestion additionally flags Bvp47-style
+"SYN knock" covert channels (payload in a TCP SYN packet) as tool/TTP-band
+indicators. See [`docs/DEFENSIVE_DOCTRINE.md`](docs/DEFENSIVE_DOCTRINE.md) for
+the philosophy → protocol → method extraction these capabilities implement.
+
 ## Development & Testing
 ```bash
 pip install -r requirements-dev.txt

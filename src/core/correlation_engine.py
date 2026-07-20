@@ -131,6 +131,11 @@ class CorrelationEngine:
               enabled: true
               min_detections: 8    # raw detection volume in the window
               severity: 4
+            behavioral_progression:  # Jack Crook's I-BAD, adapted
+              enabled: true
+              min_phases: 2        # same entity seen across this many phases...
+              min_weight: 4        # ...with at least this much cumulative weight
+              severity: 5
     """
 
     def __init__(self, config: Optional[Dict[str, Any]] = None, movement=None):
@@ -149,6 +154,8 @@ class CorrelationEngine:
                               "severity": 4, **(rules.get("cross_sensor") or {})}
         self._burst = {"enabled": True, "min_detections": 8,
                        "severity": 4, **(rules.get("burst") or {})}
+        self._progression = {"enabled": True, "min_phases": 2, "min_weight": 4,
+                             "severity": 5, **(rules.get("behavioral_progression") or {})}
 
         # Trusted entities (the user's own gear) are excluded from correlation
         # entirely: your smartwatch at strong RSSI all day is not evidence of
@@ -196,6 +203,8 @@ class CorrelationEngine:
                 "severity": int(d.get("severity", 1)),
                 "entities": [e for e in entities if e not in self._allowlist],
                 "id": d.get("id"),
+                "phase": d.get("phase"),
+                "weight": float(d.get("weight") or 0.0),
             })
 
         cutoff = now - self.window
@@ -206,6 +215,7 @@ class CorrelationEngine:
         meta.extend(self._check_persistence(now))
         meta.extend(self._check_cross_sensor(now))
         meta.extend(self._check_burst(now))
+        meta.extend(self._check_progression(now))
         return meta
 
     def _cooled_down(self, key: str, now: float) -> bool:
@@ -314,3 +324,46 @@ class CorrelationEngine:
             f"environment is actively hostile or rapidly changing",
             {"event_count": len(self._events)},
         )]
+
+    def _check_progression(self, now: float) -> List[Dict[str, Any]]:
+        """Same entity across multiple weighted phases → behavioural progression.
+
+        Jack Crook's I-BAD framing: a detection carries a kill-chain ``phase``
+        and a ``weight``; an entity that accumulates weight across several
+        *distinct* phases (e.g. reconnaissance → tracking → evasion) is showing
+        behavioural progression, not a single stray reading. This is the
+        strongest TTP-level signal the grid can assemble about one entity.
+        """
+        if not self._progression.get("enabled", True):
+            return []
+        min_phases = int(self._progression.get("min_phases", 2))
+        min_weight = float(self._progression.get("min_weight", 4))
+
+        # entity -> {phase -> summed weight}
+        scored: Dict[str, Dict[str, float]] = {}
+        for ev in self._events:
+            phase = ev.get("phase")
+            if not phase:
+                continue  # unscored detections don't contribute to progression
+            weight = float(ev.get("weight") or 0.0)
+            for ent in ev["entities"]:
+                scored.setdefault(ent, {})
+                scored[ent][phase] = scored[ent].get(phase, 0.0) + weight
+
+        out = []
+        for ent, phases in scored.items():
+            total_weight = sum(phases.values())
+            if len(phases) < min_phases or total_weight < min_weight:
+                continue
+            if not self._cooled_down(f"progression:{ent}", now):
+                continue
+            out.append(self._meta(
+                "behavioral_progression",
+                self._progression.get("severity", 5),
+                f"Entity {ent} progressed across {len(phases)} behavioural "
+                f"phases ({', '.join(sorted(phases))}) with cumulative weight "
+                f"{total_weight:.0f} — coordinated multi-stage behaviour",
+                {"entity": ent, "phases": sorted(phases),
+                 "phase_count": len(phases), "total_weight": total_weight},
+            ))
+        return out
