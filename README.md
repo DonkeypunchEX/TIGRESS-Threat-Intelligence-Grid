@@ -68,13 +68,26 @@ The dashboard exposes read-only JSON endpoints:
 | `GET /` | Status and sensor list |
 | `GET /sensors` | Per-sensor status |
 | `GET /health` | Liveness probe |
-| `GET /detections` | Recent detections, newest first. Query params: `limit`, `min_severity` (1-5), `sensor_type` (`wifi`/`phone`/`bluetooth`/`correlation`/`network`), `pyramid_level` (`address`/`artifact`/`tool`/`ttp`) |
+| `GET /detections` | Recent detections, newest first (in-memory). Query params: `limit`, `min_severity` (1-5), `sensor_type` (`wifi`/`phone`/`bluetooth`/`correlation`/`network`), `pyramid_level` (`address`/`artifact`/`tool`/`ttp`) |
 | `GET /detections/summary` | Counts of recent detections by severity, sensor type, and Pyramid of Pain band |
+| `GET /events` | Query the durable event store (persists across restarts). Params: `limit`, `event_type`, `min_severity`, `sensor_type`, `since`/`until` (ISO), `q` (description substring) |
+| `GET /events/summary` | Counts of persisted events by severity, type, and sensor over a `since`/`until` window |
+| `GET /analytics` | Time-bucketed event counts (`bucket` = `hour`/`day`/`month`) plus top descriptions, filtered by `event_type`, `since`/`until` |
 | `POST /ingest/suricata` | Ingest Suricata EVE alert(s) from a router/gateway. Body: one EVE record or a list. Always requires the bearer token (returns 403 if none is configured) |
 
+### Persistent event store (SQLite)
+`/detections` is a fast in-memory view of the most recent detections and is lost
+on restart. For durable, queryable history, TIGRESS also writes every detection
+(and other forensic events) to a SQLite database — the standard-library
+`sqlite3`, no extra dependencies. It backs `/events`, `/events/summary`, and
+`/analytics`, and complements (does not replace) the tamper-evident forensic
+JSONL and signed audit log, which remain the authoritative record. Enable it via
+`alerting.event_db` (default `data/events.db`; set empty to disable). All queries
+are parameterized — there is no raw-SQL endpoint.
+
 ### Authentication
-The data endpoints (`/`, `/sensors`, `/detections`, `/detections/summary`) can
-require a bearer token. Set `server.api_token` in the config **or** the
+The data endpoints (`/`, `/sensors`, `/detections`, `/detections/summary`,
+`/events`, `/events/summary`, `/analytics`) can require a bearer token. Set `server.api_token` in the config **or** the
 `TIGRESS_API_TOKEN` environment variable; when set, requests without a valid
 `Authorization: Bearer <token>` header get `401`. `/health` is always open for
 liveness probes. If neither a token nor `--secure` (mTLS) is configured, the
@@ -142,11 +155,15 @@ sensor keeps in memory. `alerting.history_size` (default 500) caps how many
 recent detections are held in memory for the `/detections` API. Detection rules
 live in `config/rules.yaml`.
 
-The forensic log can rotate and self-prune: `alerting.forensic_max_bytes`
+The forensic log can rotate and self-prune. `alerting.forensic_max_bytes`
 (default 0 = never) rotates the active log under a dated filename once it would
-exceed that size, writing a detached `<file>.sha256` sidecar (the hash stored
-*separately* from the data), and `alerting.forensic_retention_days` (default 0 =
-keep forever) prunes rotated logs older than the window.
+exceed that size, and `alerting.forensic_rotation_interval` (seconds, default 0
+= never) rotates on the first write after that much time has elapsed — a
+size-independent trigger so retention works even on a small log. Each rotation
+writes a detached `<file>.sha256` sidecar (the hash stored *separately* from the
+data). `alerting.forensic_retention_days` (default 0 = keep forever) prunes
+rotated logs older than the window on each rotation; set `forensic_max_bytes`
+and/or `forensic_rotation_interval` for pruning to ever run.
 
 ### Security posture
 One knob retunes the whole grid coherently — set `posture` in the config or
@@ -227,7 +244,9 @@ is the combination: a randomized-MAC device flagged by enrichment that then
 trips the persistence correlation rule.
 
 ## Runtime Protection
-Running with `--secure` verifies the boot manifest and starts runtime integrity
+Running with `--secure` first enforces self-validation (see
+[Self-Validation](#self-validation) — startup is refused if the detector can't
+be validated), then verifies the boot manifest and starts runtime integrity
 monitoring: critical-file hashing and debugger detection, plus optional
 **process monitoring**. When `security.process_monitoring` is enabled, TIGRESS
 records a baseline of running processes at startup and alarms only when a
@@ -299,10 +318,12 @@ It runs the real engine over the golden dataset, confirms the expected
 detections fire, writes a versioned `validation_<version>_<timestamp>.json`
 record, and exits non-zero on any failure (usable as a CI/release gate).
 `src.core.selftest.needs_revalidation(dir)` reports when the latest record is
-missing, failed, or was produced by a different version. On startup the
-dashboard logs a warning when no current passing validation exists (records are
-read from `app.validation_dir`, default `data/validation`), nudging you to run
-the self-test before relying on detections.
+missing, failed, or was produced by a different version (records are read from
+`app.validation_dir`, default `data/validation`). On a normal startup the
+dashboard only logs a warning when no current passing validation exists. Under
+`--secure` it is **enforced**: if validation is needed the self-test runs
+inline, and startup is refused (non-zero exit) if it fails — so a secure
+deployment never serves an unvalidated or broken detector.
 
 ## Development & Testing
 ```bash

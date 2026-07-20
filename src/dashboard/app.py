@@ -128,6 +128,54 @@ def ingest_suricata(payload: Union[List[Any], Dict[str, Any]] = Body(...)):
     return _manager.detection_engine.ingest_network(payload)
 
 
+@app.get("/events", dependencies=[Depends(_require_token)])
+def events(
+    limit: int = 50,
+    event_type: Optional[str] = None,
+    min_severity: Optional[int] = None,
+    sensor_type: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    q: Optional[str] = None,
+):
+    """Query the durable event store (persists across restarts).
+
+    Unlike ``/detections`` (recent, in-memory), this reads from SQLite and
+    supports ``event_type``, ``min_severity``, ``sensor_type``, ISO ``since`` /
+    ``until`` bounds, and a ``q`` substring match on the description. Returns
+    ``[]`` when persistence is disabled.
+    """
+    if not _manager:
+        return []
+    return _manager.detection_engine.event_store.recent(
+        limit=limit, event_type=event_type, min_severity=min_severity,
+        sensor_type=sensor_type, since=since, until=until, text=q,
+    )
+
+
+@app.get("/events/summary", dependencies=[Depends(_require_token)])
+def events_summary(since: Optional[str] = None, until: Optional[str] = None):
+    """Counts of persisted events by severity, type, and sensor over a window."""
+    if not _manager:
+        return {"total": 0, "by_severity": {}, "by_type": {}, "by_sensor_type": {}}
+    return _manager.detection_engine.event_store.summary(since=since, until=until)
+
+
+@app.get("/analytics", dependencies=[Depends(_require_token)])
+def analytics(
+    bucket: str = "day",
+    event_type: str = "detection",
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+):
+    """Time-bucketed event counts (``hour``/``day``/``month``) + top descriptions."""
+    if not _manager:
+        return {"bucket": bucket, "counts": [], "top_descriptions": []}
+    return _manager.detection_engine.event_store.analytics(
+        bucket=bucket, event_type=event_type, since=since, until=until,
+    )
+
+
 def _ssl_options(secure: bool, server: Dict[str, Any]) -> Dict[str, Any]:
     """Build uvicorn TLS/mTLS keyword arguments.
 
@@ -154,25 +202,51 @@ def _ssl_options(secure: bool, server: Dict[str, Any]) -> Dict[str, Any]:
     return {"ssl_context_factory": ssl_context_factory}
 
 
-def _warn_if_revalidation_needed(config: Dict[str, Any]) -> None:
-    """Log a warning when the detector has no current passing validation.
+def _enforce_validation(config: Dict[str, Any], secure: bool) -> None:
+    """Ensure the detector is validated before use (NIJ validate-before-use).
 
-    Follows the NIJ practice of validating a forensic tool before use and after
-    every update: if the latest validation record is missing, failed, or from a
-    different version, nudge the operator to run ``scripts/selftest.py``.
+    When the latest validation record is missing, failed, or from a different
+    version:
+
+    * without ``--secure`` the operator is warned but startup proceeds;
+    * with ``--secure`` the self-test is run inline — if it passes the record
+      is written and startup continues, but if it fails (or cannot run) startup
+      is refused via :class:`SystemExit`, so a secure deployment never serves an
+      unvalidated or broken detector.
     """
     validation_dir = config.get("app", {}).get("validation_dir", "data/validation")
     try:
-        from src.core.selftest import needs_revalidation
-        if needs_revalidation(validation_dir):
-            logger.warning(
-                "No current passing self-validation found in %s; run "
-                "`python scripts/selftest.py` to validate this version before "
-                "relying on detections.",
-                validation_dir,
-            )
-    except Exception as e:  # never block startup on the validation check
+        from src.core.selftest import needs_revalidation, run_selftest
+    except Exception as e:  # selftest deps unavailable
+        if secure:
+            raise SystemExit(f"Refusing to start in --secure mode: {e}") from e
         logger.debug(f"Revalidation check skipped: {e}")
+        return
+
+    if not needs_revalidation(validation_dir):
+        return
+
+    if not secure:
+        logger.warning(
+            "No current passing self-validation found in %s; run "
+            "`python scripts/selftest.py` to validate this version before "
+            "relying on detections.",
+            validation_dir,
+        )
+        return
+
+    logger.info("No current passing self-validation; running self-test before secure startup.")
+    try:
+        report = run_selftest(record_dir=validation_dir)
+    except Exception as e:
+        raise SystemExit(f"Refusing to start in --secure mode: self-test errored: {e}") from e
+    if not report["ok"]:
+        failed = ", ".join(c["name"] for c in report["checks"] if not c["passed"])
+        raise SystemExit(
+            "Refusing to start in --secure mode: self-validation failed "
+            f"({failed}). Investigate before relying on detections."
+        )
+    logger.info("Self-validation passed; continuing secure startup.")
 
 
 def main():
@@ -191,7 +265,7 @@ def main():
 
     _manager = SensorManager(dummy=args.dummy, training=args.train)
 
-    _warn_if_revalidation_needed(_manager.config)
+    _enforce_validation(_manager.config, args.secure)
 
     if args.secure:
         from src.security.secure_boot import start_runtime_protection

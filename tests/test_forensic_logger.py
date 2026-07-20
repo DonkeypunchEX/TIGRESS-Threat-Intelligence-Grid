@@ -84,6 +84,34 @@ def test_concurrent_writes_across_rotation_lose_nothing(tmp_path):
     assert seen == expected  # no lost or corrupted entries under concurrent rotation
 
 
+def test_time_based_rotation_triggers_without_size_cap(tmp_path):
+    log_path = tmp_path / "forensic.jsonl"
+    # No max_bytes; rotate purely on elapsed time.
+    logger = ForensicLogger(str(log_path), rotation_interval=3600)
+    logger.log("detection", {"id": "a"})
+    assert not list(tmp_path.glob("forensic_*.jsonl"))  # interval not yet elapsed
+
+    # Pretend the interval has elapsed; the next write should rotate.
+    logger._period_start -= 4000
+    logger.log("detection", {"id": "b"})
+    rotated = list(tmp_path.glob("forensic_*.jsonl"))
+    assert len(rotated) == 1
+    assert rotated[0].with_suffix(rotated[0].suffix + ".sha256").exists()
+
+
+def test_retention_warns_only_when_no_rotation_trigger(tmp_path, caplog):
+    import logging
+    with caplog.at_level(logging.WARNING):
+        ForensicLogger(str(tmp_path / "a.jsonl"), retention_days=7)  # no size/time trigger
+    assert any("retention_days" in r.message for r in caplog.records)
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        # A time trigger makes retention actionable -> no warning.
+        ForensicLogger(str(tmp_path / "b.jsonl"), retention_days=7, rotation_interval=3600)
+    assert not any("retention_days" in r.message for r in caplog.records)
+
+
 def test_retention_prunes_old_rotated_files(tmp_path):
     log_path = tmp_path / "forensic.jsonl"
     logger = ForensicLogger(str(log_path), max_bytes=80, retention_days=1)

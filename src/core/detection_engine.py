@@ -22,6 +22,7 @@ from sklearn.preprocessing import StandardScaler
 from src.core.correlation_engine import CorrelationEngine, classify_pyramid_level
 from src.core.detection_store import DetectionStore
 from src.core.enrichment import Enricher
+from src.core.event_store import EventStore, NullEventStore
 from src.core.movement import MovementTracker
 from src.utils.alerting import AlertDispatcher
 from src.utils.config_loader import ConfigLoader
@@ -59,10 +60,14 @@ class DetectionEngine:
 
         self._rules = ConfigLoader.load_yaml(det.get("rules_file", "config/rules.yaml"))
         alerting = self.config.get("alerting", {})
+        event_db = alerting.get("event_db")
+        self.event_store = EventStore(event_db) if event_db else NullEventStore()
         self.forensic = ForensicLogger(
             alerting.get("forensic_log", "data/alerts/forensic.jsonl"),
             max_bytes=alerting.get("forensic_max_bytes", 0),
             retention_days=alerting.get("forensic_retention_days", 0),
+            rotation_interval=alerting.get("forensic_rotation_interval", 0),
+            on_write=self.event_store.record,
         )
         self.history = DetectionStore(max_size=alerting.get("history_size", 500))
         self.alerts = AlertDispatcher.from_config(alerting)
