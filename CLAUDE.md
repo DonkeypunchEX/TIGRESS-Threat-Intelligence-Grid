@@ -45,7 +45,8 @@ several modules:
    OS scanning tools; `DummySensor` fabricates readings. The backend is chosen
    per host OS (`src/core/platform.py`): Termux/POSIX sensors in
    `SENSOR_REGISTRY`, Windows sensors (`src/sensors/windows/`: `netsh wlan` +
-   PowerShell `Get-PnpDevice`) in `WINDOWS_SENSOR_REGISTRY`, selected by
+   a WinRT `BluetoothLEAdvertisementWatcher` live BLE sweep, PowerShell
+   `Get-PnpDevice` fallback) in `WINDOWS_SENSOR_REGISTRY`, selected by
    `active_sensor_registry()` in `src/core/sensor_manager.py`. Windows has no
    accelerometer analogue, so the `phone` sensor is skipped there. All sensors
    emit the same reading schema regardless of platform.

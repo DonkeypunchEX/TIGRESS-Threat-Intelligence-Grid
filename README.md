@@ -1,6 +1,6 @@
-# TIGRESS – Threat Intelligence Grid for Android
+# TIGRESS-W – Threat Intelligence Grid (Windows Edition)
 
-Security monitoring framework for Android/Termux (and now Windows): WiFi anomaly detection, physical tamper detection, and ML-based threat analysis. See [Windows](#windows) for the native desktop backends.
+The Windows-first edition of [TIGRESS](https://github.com/DonkeypunchEX/TIGRESS-Threat-Intelligence-Grid) — the same counter-surveillance engine (WiFi anomaly detection, tracker/BLE proximity detection, ML anomaly scoring, cross-sensor correlation, FastAPI dashboard), running natively on Windows with `netsh` WiFi scanning and a WinRT `BluetoothLEAdvertisementWatcher` BLE sweep. It stays a single cross-platform codebase: the Android/Termux backends ship in the same tree and are still fully supported. See [Windows](#windows) for the native desktop backends; the sections below apply to every platform.
 
 ## Features
 - WiFi scanning with new-BSSID and SSID-rule alerting
@@ -62,7 +62,7 @@ Windows with native backends:
 | Concern | Android/Termux | Windows |
 | ------- | -------------- | ------- |
 | WiFi scan | `termux-wifi-scaninfo` | `netsh wlan show networks mode=bssid` |
-| Bluetooth scan | `termux-bluetooth-scaninfo` | PowerShell `Get-PnpDevice -Class Bluetooth` |
+| Bluetooth scan | `termux-bluetooth-scaninfo` | WinRT `BluetoothLEAdvertisementWatcher` live sweep (PowerShell `Get-PnpDevice` fallback) |
 | Accelerometer (tamper) | `termux-sensor` | *not available on desktop — skipped* |
 | Notifications | `termux-notification` | WinRT toast via PowerShell |
 | Launcher | `scripts/tigress_launcher.sh` | `scripts/tigress_launcher.ps1` |
@@ -77,10 +77,12 @@ powershell -ExecutionPolicy Bypass -File scripts\tigress_launcher.ps1 -Secure
 
 The WiFi sensor emits the same per-BSSID reading schema (`BSSID`/`SSID` plus a
 signal-percent → approximate-RSSI mapping) the engine already consumes, so
-rules, enrichment, and correlation work unchanged. The Bluetooth sensor
-enumerates the devices the Windows stack currently sees (paired/connected
-classic + BLE) rather than doing a raw RF sweep; a WinRT
-`BluetoothLEAdvertisementWatcher` passive scan is a natural future enhancement.
+rules, enrichment, and correlation work unchanged. The Bluetooth sensor runs a
+live WinRT `BluetoothLEAdvertisementWatcher` sweep (window set by
+`bluetooth.ble_scan_seconds`), reporting every advertising device in range with
+its real RSSI — so the proximity/tracker rules fire on genuine RF data. If the
+watcher is unavailable (older Windows, no BLE radio) it falls back to
+enumerating OS-known devices via `Get-PnpDevice` (`bluetooth.pnp_fallback`).
 Alert channels are platform-aware: the `windows` toast channel and the `termux`
 channel each no-op harmlessly off their own platform, so a shared config is
 portable. `netsh` output is localized — parsing targets the English field

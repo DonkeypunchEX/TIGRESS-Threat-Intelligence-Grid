@@ -34,6 +34,8 @@ sensors:
     alert_threshold: 5
     known_devices_file: "data/known_bt_devices.txt"
     known_remote_file: "data/known_remote_ble.txt"  # seen-set for /ingest/ble nodes
+    ble_scan_seconds: 4        # Windows: BLE advertisement-watcher sweep window per scan
+    pnp_fallback: true         # Windows: fall back to Get-PnpDevice if the BLE sweep is empty
 
 detection:
   confidence_threshold: 0.6

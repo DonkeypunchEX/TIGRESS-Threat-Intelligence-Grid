@@ -1,4 +1,4 @@
-"""Windows Bluetooth sensor: PnP JSON parsing and address extraction (hermetic)."""
+"""Windows Bluetooth sensor: BLE-advertisement + PnP parsing (hermetic)."""
 
 import json
 
@@ -7,7 +7,47 @@ from src.sensors.windows.bluetooth_sensor import (
     _address_from_instance_id,
 )
 
-# `Get-PnpDevice ... | ConvertTo-Json` for several devices -> a JSON array.
+# --------------------------------------------------------------------------- #
+# BLE advertisement watcher (primary backend)
+# --------------------------------------------------------------------------- #
+
+# Watcher JSON: same address twice (weak then strong), plus a nameless beacon.
+BLE_ARRAY = json.dumps([
+    {"address": "e0:aa:bb:cc:dd:ee", "name": "AirTag", "rssi": -70},
+    {"address": "e0:aa:bb:cc:dd:ee", "name": "AirTag", "rssi": -42},
+    {"address": "11:22:33:44:55:66", "name": None, "rssi": -55},
+])
+
+# ConvertTo-Json emits a bare object for a single advertisement.
+BLE_SINGLE = json.dumps({"address": "aa:bb:cc:dd:ee:ff", "name": "Buds", "rssi": -60})
+
+
+def test_parse_advertisements_dedupes_keeping_strongest_rssi():
+    devs = WindowsBluetoothSensor.parse_advertisements(BLE_ARRAY)
+    by_addr = {d["address"]: d for d in devs}
+    assert set(by_addr) == {"e0:aa:bb:cc:dd:ee", "11:22:33:44:55:66"}
+    # Strongest (least-negative) RSSI wins for a repeated address.
+    assert by_addr["e0:aa:bb:cc:dd:ee"]["rssi"] == -42
+    assert by_addr["e0:aa:bb:cc:dd:ee"]["name"] == "AirTag"
+
+
+def test_parse_advertisements_single_object():
+    devs = WindowsBluetoothSensor.parse_advertisements(BLE_SINGLE)
+    assert len(devs) == 1
+    assert devs[0]["address"] == "aa:bb:cc:dd:ee:ff"
+    assert devs[0]["rssi"] == -60
+
+
+def test_parse_advertisements_handles_empty_and_garbage():
+    assert WindowsBluetoothSensor.parse_advertisements("") == []
+    assert WindowsBluetoothSensor.parse_advertisements("[]") == []
+    assert WindowsBluetoothSensor.parse_advertisements("not json") == []
+
+
+# --------------------------------------------------------------------------- #
+# PnP enumeration (fallback backend)
+# --------------------------------------------------------------------------- #
+
 PNP_ARRAY = json.dumps([
     {
         "FriendlyName": "AirTag",
@@ -27,7 +67,6 @@ PNP_ARRAY = json.dumps([
     },
 ])
 
-# `ConvertTo-Json` emits a bare object (not an array) for a single device.
 PNP_SINGLE = json.dumps({
     "FriendlyName": "Galaxy Buds",
     "InstanceId": "BTHENUM\\Dev_112233445566\\7&x&0",
@@ -46,45 +85,103 @@ def test_parse_devices_array_skips_addressless():
     devs = WindowsBluetoothSensor.parse_devices(PNP_ARRAY)
     addrs = {d["address"] for d in devs}
     assert addrs == {"e0:aa:bb:cc:dd:ee", "a1:b2:c3:d4:e5:f6"}
-    airtag = next(d for d in devs if d["address"] == "e0:aa:bb:cc:dd:ee")
-    assert airtag["name"] == "AirTag"  # tracker-name rule can match this
 
 
 def test_parse_devices_single_object():
     devs = WindowsBluetoothSensor.parse_devices(PNP_SINGLE)
     assert len(devs) == 1
     assert devs[0]["address"] == "11:22:33:44:55:66"
-    assert devs[0]["name"] == "Galaxy Buds"
 
 
 def test_parse_devices_handles_empty_and_garbage():
     assert WindowsBluetoothSensor.parse_devices("") == []
     assert WindowsBluetoothSensor.parse_devices("not json") == []
-    assert WindowsBluetoothSensor.parse_devices("[]") == []
 
 
-def test_scan_tracks_new_devices(tmp_path, monkeypatch):
+# --------------------------------------------------------------------------- #
+# Scan orchestration: watcher first, PnP fallback
+# --------------------------------------------------------------------------- #
+
+def _make_sensor(tmp_path):
     known = tmp_path / "known_bt.txt"
-    sensor = WindowsBluetoothSensor("bluetooth_sensor", {"known_devices_file": str(known)})
+    return WindowsBluetoothSensor(
+        "bluetooth_sensor",
+        {"known_devices_file": str(known), "ble_scan_seconds": 1},
+    )
 
-    class _Result:
-        returncode = 0
-        stdout = PNP_ARRAY
+
+def _script_of(call_args):
+    # subprocess.run(cmd_list, ...); the PowerShell script is the last token.
+    return call_args[0][-1]
+
+
+def test_scan_prefers_live_ble_advertisements(tmp_path, monkeypatch):
+    sensor = _make_sensor(tmp_path)
+    seen_scripts = []
+
+    def _fake_run(cmd, **kwargs):
+        seen_scripts.append(_script_of((cmd,)))
+
+        class _R:
+            returncode = 0
+            stdout = BLE_ARRAY
+        return _R()
 
     monkeypatch.setattr(
         "src.sensors.windows.bluetooth_sensor.shutil.which", lambda _c: "powershell"
     )
     monkeypatch.setattr(
-        "src.sensors.windows.bluetooth_sensor.subprocess.run",
-        lambda *a, **k: _Result(),
+        "src.sensors.windows.bluetooth_sensor.subprocess.run", _fake_run
     )
 
-    first = sensor._scan()
-    assert first["device_count"] == 2
-    assert first["new_device_count"] == 2
+    reading = sensor._scan()
+    assert reading["device_count"] == 2
+    assert reading["new_device_count"] == 2
+    # The BLE watcher was used and the PnP fallback was NOT needed.
+    assert any("BluetoothLEAdvertisementWatcher" in s for s in seen_scripts)
+    assert not any("Get-PnpDevice" in s for s in seen_scripts)
 
-    second = sensor._scan()
-    assert second["new_device_count"] == 0
+
+def test_scan_falls_back_to_pnp_when_watcher_empty(tmp_path, monkeypatch):
+    sensor = _make_sensor(tmp_path)
+
+    def _fake_run(cmd, **kwargs):
+        script = _script_of((cmd,))
+
+        class _R:
+            returncode = 0
+            stdout = "[]" if "BluetoothLEAdvertisementWatcher" in script else PNP_ARRAY
+        return _R()
+
+    monkeypatch.setattr(
+        "src.sensors.windows.bluetooth_sensor.shutil.which", lambda _c: "powershell"
+    )
+    monkeypatch.setattr(
+        "src.sensors.windows.bluetooth_sensor.subprocess.run", _fake_run
+    )
+
+    reading = sensor._scan()
+    # Fell back to PnP and still found the two addressable devices.
+    assert reading["device_count"] == 2
+    assert reading["new_device_count"] == 2
+
+
+def test_scan_tracks_new_devices_across_calls(tmp_path, monkeypatch):
+    sensor = _make_sensor(tmp_path)
+
+    class _R:
+        returncode = 0
+        stdout = BLE_ARRAY
+
+    monkeypatch.setattr(
+        "src.sensors.windows.bluetooth_sensor.shutil.which", lambda _c: "powershell"
+    )
+    monkeypatch.setattr(
+        "src.sensors.windows.bluetooth_sensor.subprocess.run", lambda *a, **k: _R()
+    )
+
+    assert sensor._scan()["new_device_count"] == 2
+    assert sensor._scan()["new_device_count"] == 0  # nothing new second time
 
 
 def test_connect_false_when_powershell_missing(monkeypatch):

@@ -1,17 +1,22 @@
-"""Bluetooth scanning sensor backed by Windows PowerShell ``Get-PnpDevice``.
+"""Bluetooth scanning sensor for Windows, driven by PowerShell.
 
 The Windows counterpart of :class:`src.sensors.bluetooth_sensor.BluetoothSensor`.
-Windows' mainline PowerShell has no dependency-free live BLE-advertisement
-sweep, so this sensor enumerates the Bluetooth devices the OS stack currently
-sees (paired/connected classic and BLE devices) via ``Get-PnpDevice -Class
-Bluetooth -PresentOnly`` and maps them into the same reading schema the
-detection engine consumes — ``devices`` with ``address``/``name`` keys — so
-Bluetooth rules, enrichment, and correlation work unchanged.
 
-This is OS-visible enumeration, not a raw RF sweep: a device must be known to
-the Windows Bluetooth stack to appear. A WinRT ``BluetoothLEAdvertisementWatcher``
-would give a true passive scan and is a natural future enhancement; the parsing
-here is factored out so that backend can slot in without touching the pipeline.
+Primary backend: a live BLE sweep via the WinRT
+``BluetoothLEAdvertisementWatcher`` (Windows 10+), driven from PowerShell. This
+is a true passive/active RF scan — it reports every advertising device in
+range with its real RSSI, which is what the proximity and tracker rules want.
+
+Fallback backend: ``Get-PnpDevice -Class Bluetooth -PresentOnly`` enumerates
+the devices the OS stack already knows (paired/connected classic + BLE). It has
+no RSSI, but it still surfaces devices when the advertisement watcher is
+unavailable (older Windows, no BLE radio, group policy).
+
+Both backends map into the same reading schema the detection engine consumes —
+``devices`` with ``address``/``name``/``rssi`` keys — so Bluetooth rules,
+enrichment, and correlation work unchanged. The PowerShell here cannot be
+exercised off-Windows, so the JSON parsing is factored into pure static methods
+that are unit-tested directly.
 """
 
 import json
@@ -34,7 +39,36 @@ logger = get_logger(__name__)
 _DEV_ADDR_RE = re.compile(r"[Dd]ev_([0-9A-Fa-f]{12})")
 _BARE_ADDR_RE = re.compile(r"(?<![0-9A-Fa-f])([0-9A-Fa-f]{12})(?![0-9A-Fa-f])")
 
-_PS_COMMAND = (
+# Live BLE sweep: start a WinRT advertisement watcher, collect every
+# advertisement seen during the scan window into a synchronized hashtable
+# (populated from the event handler via -MessageData, the scope-safe pattern),
+# then emit address/name/rssi as JSON. __SECONDS__ is substituted with the
+# scan window; addresses come back as lowercase colon-separated MACs.
+_BLE_WATCHER_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+$null = [Windows.Devices.Bluetooth.Advertisement.BluetoothLEAdvertisementWatcher, Windows, ContentType=WindowsRuntime]
+$watcher = [Windows.Devices.Bluetooth.Advertisement.BluetoothLEAdvertisementWatcher]::new()
+$watcher.ScanningMode = 'Active'
+$seen = [hashtable]::Synchronized(@{})
+$sub = Register-ObjectEvent -InputObject $watcher -EventName Received -MessageData $seen -Action {
+    $store = $Event.MessageData
+    $args0 = $Event.SourceEventArgs
+    $mac = (('{0:X12}' -f $args0.BluetoothAddress) -replace '(..)(?!$)', '$1:').ToLower()
+    $store[$mac] = [pscustomobject]@{
+        address = $mac
+        name    = $args0.Advertisement.LocalName
+        rssi    = [int]$args0.RawSignalStrengthInDBm
+    }
+}
+$watcher.Start()
+Start-Sleep -Seconds __SECONDS__
+$watcher.Stop()
+Unregister-Event -SourceIdentifier $sub.Name
+$out = @($seen.Values)
+if ($out.Count -gt 0) { $out | ConvertTo-Json -Compress } else { '[]' }
+"""
+
+_PNP_COMMAND = (
     "Get-PnpDevice -Class Bluetooth -PresentOnly | "
     "Select-Object FriendlyName,InstanceId,Status | ConvertTo-Json -Compress"
 )
@@ -60,11 +94,13 @@ def _address_from_instance_id(instance_id: str) -> Optional[str]:
 
 
 class WindowsBluetoothSensor(BaseSensor):
-    """Enumerates Windows Bluetooth devices and tracks newly-seen addresses."""
+    """Scans Bluetooth via a WinRT BLE watcher (PnP fallback) and tracks new devices."""
 
     def __init__(self, sensor_id: str, config: dict):
         super().__init__(sensor_id, "bluetooth", config)
         self._interval = config.get("scan_interval", 30)
+        self._scan_seconds = max(1, int(config.get("ble_scan_seconds", 4)))
+        self._pnp_fallback = bool(config.get("pnp_fallback", True))
         self._known_file = Path(config.get("known_devices_file", "data/known_bt_devices.txt"))
         self._known_addrs: set = self._load_known()
         self._thread: Optional[threading.Thread] = None
@@ -80,9 +116,13 @@ class WindowsBluetoothSensor(BaseSensor):
         self._known_file.parent.mkdir(exist_ok=True, parents=True)
         self._known_file.write_text("\n".join(sorted(self._known_addrs)) + "\n")
 
+    def _shell(self) -> Optional[str]:
+        """Return the PowerShell executable to use, or None if unavailable."""
+        return shutil.which("powershell") or shutil.which("pwsh")
+
     def connect(self) -> bool:
         """Check that PowerShell is available; return True on success."""
-        if shutil.which("powershell") is None and shutil.which("pwsh") is None:
+        if self._shell() is None:
             logger.warning("powershell not found — Windows Bluetooth sensor disabled")
             return False
         self.connected = True
@@ -117,13 +157,52 @@ class WindowsBluetoothSensor(BaseSensor):
             time.sleep(self._interval)
 
     @staticmethod
+    def parse_advertisements(raw: str) -> List[dict]:
+        """Parse the BLE watcher's JSON into devices.
+
+        Returns one dict per unique address with ``address``/``name``/``rssi``.
+        ``ConvertTo-Json`` emits a bare object for a single advertisement and an
+        array for several; when the same address appears more than once the
+        strongest (least-negative) RSSI is kept.
+        """
+        raw = (raw or "").strip()
+        if not raw:
+            return []
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            return []
+        if isinstance(data, dict):
+            data = [data]
+        if not isinstance(data, list):
+            return []
+
+        best: dict = {}
+        for entry in data:
+            if not isinstance(entry, dict):
+                continue
+            addr = entry.get("address")
+            if not addr:
+                continue
+            addr = str(addr).lower()
+            rssi = entry.get("rssi")
+            name = entry.get("name") or None
+            prev = best.get(addr)
+            if prev is None or (rssi is not None and prev.get("rssi") is not None
+                                and rssi > prev["rssi"]):
+                best[addr] = {"address": addr, "name": name, "rssi": rssi}
+            elif prev.get("name") is None and name is not None:
+                prev["name"] = name
+        return list(best.values())
+
+    @staticmethod
     def parse_devices(raw: str) -> List[dict]:
         """Parse ``Get-PnpDevice ... | ConvertTo-Json`` output into devices.
 
-        Returns one dict per device with ``address``/``name``/``status`` keys
-        (matching the Termux Bluetooth schema). ``ConvertTo-Json`` emits a bare
-        object for a single device and an array for several, and devices whose
-        InstanceId carries no resolvable address are skipped.
+        Fallback backend. Returns one dict per device with
+        ``address``/``name``/``status`` keys (matching the Termux Bluetooth
+        schema); devices whose InstanceId carries no resolvable address are
+        skipped. Handles both the bare-object and array JSON shapes.
         """
         raw = (raw or "").strip()
         if not raw:
@@ -151,22 +230,45 @@ class WindowsBluetoothSensor(BaseSensor):
             })
         return devices
 
-    def _scan(self) -> Optional[dict]:
-        """Run one enumeration and build a reading, or None on failure."""
-        try:
-            shell = shutil.which("powershell") or shutil.which("pwsh")
-            if not shell:
-                return None
-            result = subprocess.run(
-                [shell, "-NoProfile", "-NonInteractive", "-Command", _PS_COMMAND],
-                capture_output=True,
-                text=True,
-                timeout=20,
-            )
-            if result.returncode != 0 or not result.stdout.strip():
-                return None
+    def _run(self, script: str, timeout: float) -> Optional[str]:
+        """Run a PowerShell snippet and return stdout, or None on failure."""
+        shell = self._shell()
+        if not shell:
+            return None
+        result = subprocess.run(
+            [shell, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if result.returncode != 0:
+            return None
+        return result.stdout
 
-            devices = self.parse_devices(result.stdout)
+    def _collect_devices(self) -> List[dict]:
+        """Run the BLE watcher, falling back to PnP enumeration if it finds nothing."""
+        try:
+            script = _BLE_WATCHER_SCRIPT.replace("__SECONDS__", str(self._scan_seconds))
+            out = self._run(script, timeout=self._scan_seconds + 15)
+            devices = self.parse_advertisements(out) if out else []
+        except Exception as e:
+            logger.debug(f"BLE watcher failed, will consider fallback: {e}")
+            devices = []
+
+        if devices or not self._pnp_fallback:
+            return devices
+
+        try:
+            out = self._run(_PNP_COMMAND, timeout=20)
+            return self.parse_devices(out) if out else []
+        except Exception as e:
+            logger.error(f"Windows Bluetooth PnP fallback error: {e}")
+            return []
+
+    def _scan(self) -> Optional[dict]:
+        """Run one scan and build a reading, or None on failure."""
+        try:
+            devices = self._collect_devices()
             addrs = {d["address"] for d in devices if d.get("address")}
             new_addrs = addrs - self._known_addrs
             self._known_addrs.update(new_addrs)
