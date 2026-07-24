@@ -78,6 +78,24 @@ def test_analytics_endpoint(manager_with_events):
     assert {t["description"] for t in a["top_descriptions"]} == {"low", "high"}
 
 
+def test_attack_coverage_endpoint(manager_with_events, monkeypatch):
+    events = manager_with_events
+    events.record("detection", {"id": "t1", "severity": 4, "sensor_type": "bluetooth",
+                                "features": {"attack": [
+                                    {"id": "T1430", "name": "Location Tracking",
+                                     "tactic": "Collection"}]}})
+    events.record("detection", {"id": "t2", "severity": 4, "sensor_type": "bluetooth",
+                                "features": {"attack": [
+                                    {"id": "T1430", "name": "Location Tracking",
+                                     "tactic": "Collection"}]}})
+    # event_store fixture manager lacks .history; enable flag already True.
+    cov = app.attack_coverage()
+    assert cov["attack_tagged"] == 2
+    assert cov["techniques"][0] == {"id": "T1430", "name": "Location Tracking", "count": 2}
+    assert cov["by_tactic"] == {"Collection": 2}
+    assert "T1430" in cov["catalog"]
+
+
 def test_endpoints_safe_without_manager(monkeypatch):
     monkeypatch.setattr(app, "_manager", None)
     assert app.detections() == []
@@ -85,6 +103,7 @@ def test_endpoints_safe_without_manager(monkeypatch):
     assert app.events() == []
     assert app.events_summary()["total"] == 0
     assert app.analytics()["counts"] == []
+    assert app.attack_coverage()["attack_tagged"] == 0
 
 
 def test_detections_pyramid_level_filter(monkeypatch):

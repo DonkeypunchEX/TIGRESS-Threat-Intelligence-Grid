@@ -85,6 +85,7 @@ The dashboard exposes read-only JSON endpoints:
 | `GET /events` | Query the durable event store (persists across restarts). Params: `limit`, `event_type`, `min_severity`, `sensor_type`, `since`/`until` (ISO), `q` (description substring) |
 | `GET /events/summary` | Counts of persisted events by severity, type, and sensor over a `since`/`until` window |
 | `GET /analytics` | Time-bucketed event counts (`bucket` = `hour`/`day`/`month`) plus top descriptions, filtered by `event_type`, `since`/`until` |
+| `GET /attack/coverage` | MITRE ATT&CK coverage over persisted detections: per-technique and per-tactic tallies plus the technique catalog. Params: `since`/`until` |
 | `POST /ingest/suricata` | Ingest Suricata EVE alert(s) from a router/gateway. Body: one EVE record or a list. Always requires the bearer token (returns 403 if none is configured) |
 | `POST /ingest/ble` | Ingest a BLE scan from a remote sensor node. Body: `{"node_id": ..., "devices": [{"address", "name", "rssi"}, ...]}`. Same strict auth as `/ingest/suricata` |
 
@@ -98,9 +99,25 @@ JSONL and signed audit log, which remain the authoritative record. Enable it via
 `alerting.event_db` (default `data/events.db`; set empty to disable). All queries
 are parameterized — there is no raw-SQL endpoint.
 
+### MITRE ATT&CK mapping
+Every detection is tagged with the ATT&CK technique(s) it evidences, so findings
+speak the framework SOCs already use. Tagging is centralized in
+`src/core/attack.py` and applied once in the engine, so rule, ML, correlation,
+and network detections are all covered — e.g. an evil-twin SSID →
+[T1557](https://attack.mitre.org/techniques/T1557/) (Adversary-in-the-Middle), a
+BLE tracker → [T1430](https://attack.mitre.org/techniques/T1430/) (Location
+Tracking), a SYN-knock covert channel →
+[T1205.001](https://attack.mitre.org/techniques/T1205/001/) (Port Knocking). The
+technique appears under `features.attack` on each detection, and
+`GET /attack/coverage` aggregates per-technique/per-tactic tallies. A rule may
+declare its own techniques with an `attack: [T1595, ...]` list in
+`config/rules.yaml` (merged with the built-in map); context-dependent detections
+(a raw Suricata signature, a multi-phase progression) are left untagged rather
+than guessed.
+
 ### Authentication
 The data endpoints (`/`, `/sensors`, `/detections`, `/detections/summary`,
-`/events`, `/events/summary`, `/analytics`) can require a bearer token. Set `server.api_token` in the config **or** the
+`/events`, `/events/summary`, `/analytics`, `/attack/coverage`) can require a bearer token. Set `server.api_token` in the config **or** the
 `TIGRESS_API_TOKEN` environment variable; when set, requests without a valid
 `Authorization: Bearer <token>` header get `401`. `/health` is always open for
 liveness probes. If neither a token nor `--secure` (mTLS) is configured, the

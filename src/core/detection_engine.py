@@ -19,6 +19,7 @@ import pandas as pd
 from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 
+from src.core import attack
 from src.core.correlation_engine import CorrelationEngine, classify_pyramid_level
 from src.core.detection_store import DetectionStore
 from src.core.enrichment import Enricher
@@ -88,6 +89,9 @@ class DetectionEngine:
         self.movement = MovementTracker(corr_cfg.get("movement"))
         self.correlation = CorrelationEngine(corr_cfg, movement=self.movement)
         self._severity_boost = int(det.get("severity_boost", 0))
+        # Rule-declared ATT&CK overrides (rules.yaml `attack:` lists), keyed by
+        # rule id; extend the built-in mapping without code changes.
+        self._attack_overrides = self._load_attack_overrides()
 
         self._models: Dict[str, IsolationForest] = {}
         self._scalers: Dict[str, StandardScaler] = {}
@@ -99,6 +103,17 @@ class DetectionEngine:
         self._remote_ble_seen: Optional[set] = None
 
         self._load_models()
+
+    def _load_attack_overrides(self) -> Dict[str, List[str]]:
+        """Collect ``attack:`` technique lists declared on rules in rules.yaml."""
+        overrides: Dict[str, List[str]] = {}
+        for section in (self._rules or {}).values():
+            if not isinstance(section, list):
+                continue
+            for rule in section:
+                if isinstance(rule, dict) and rule.get("id") and rule.get("attack"):
+                    overrides[rule["id"]] = list(rule["attack"])
+        return overrides
 
     def _load_models(self):
         for stype, path in self._model_paths.items():
@@ -243,6 +258,9 @@ class DetectionEngine:
             d.features.setdefault(
                 "pyramid_level", classify_pyramid_level(d.sensor_type, d.features)
             )
+            techniques = attack.resolve(d.__dict__, overrides=self._attack_overrides)
+            if techniques:
+                d.features.setdefault("attack", techniques)
             self.forensic.log("detection", d.__dict__)
             self.history.add(d.__dict__)
             emoji = {5: "🔴", 4: "🟠", 3: "🟡"}.get(d.severity, "⚪")

@@ -6,6 +6,8 @@
 # behavioural progression across kill-chain phases; both are optional and are
 # ignored by the rule matcher itself. Run `python scripts/audit_rules.py` to
 # flag rules that combine multiple behaviours and are candidates for splitting.
+# An optional `attack:` list (e.g. attack: [T1557]) tags matches with MITRE
+# ATT&CK technique ids; it is merged with the built-in map in src/core/attack.py.
 
 wifi_rules:
   - id: ssid_spoof_suspect
@@ -15,6 +17,7 @@ wifi_rules:
     confidence: 0.8
     phase: reconnaissance
     weight: 1
+    attack: [T1557]        # Adversary-in-the-Middle (evil-twin SSID)
     conditions:
       - field: SSID
         op: not_contains

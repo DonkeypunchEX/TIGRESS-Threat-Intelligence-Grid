@@ -10,6 +10,8 @@ import uvicorn
 from fastapi import Body, Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
 
+from src.core import attack
+from src.core.event_store import MAX_LIMIT
 from src.core.sensor_manager import SensorManager
 from src.utils.logger import get_logger
 
@@ -188,6 +190,28 @@ def analytics(
     return _manager.detection_engine.event_store.analytics(
         bucket=bucket, event_type=event_type, since=since, until=until,
     )
+
+
+@app.get("/attack/coverage", dependencies=[Depends(_require_token)])
+def attack_coverage(since: Optional[str] = None, until: Optional[str] = None):
+    """MITRE ATT&CK coverage over persisted events (technique/tactic tallies).
+
+    Aggregates the ATT&CK techniques tagged on stored detections over the
+    optional ``since``/``until`` window, plus the technique catalog for
+    reference. Falls back to the in-memory detections when persistence is off.
+    """
+    if not _manager:
+        return {"total_detections": 0, "attack_tagged": 0, "techniques": [], "by_tactic": {}}
+    engine = _manager.detection_engine
+    if getattr(engine.event_store, "enabled", False):
+        records = engine.event_store.recent(
+            limit=MAX_LIMIT, event_type="detection", since=since, until=until,
+        )
+    else:
+        records = engine.history.recent(limit=MAX_LIMIT)
+    coverage = attack.summarize(records)
+    coverage["catalog"] = attack.TECHNIQUES
+    return coverage
 
 
 def _ssl_options(secure: bool, server: Dict[str, Any]) -> Dict[str, Any]:

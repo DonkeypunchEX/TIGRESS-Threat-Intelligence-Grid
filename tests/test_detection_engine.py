@@ -76,6 +76,31 @@ def test_detections_persist_to_event_store(config_path, tmp_path):
     assert engine.event_store.count() == len(detections)
 
 
+def test_detections_are_tagged_with_attack_techniques(engine):
+    detections = engine.analyze_wifi([_wifi_scan(ssid="EvilTwin")])
+    spoof = [d for d in detections if d.features.get("rule") == "ssid_spoof_suspect"]
+    assert spoof, "expected the SSID-spoof rule to fire"
+    techniques = spoof[0].features.get("attack")
+    assert techniques == [{"id": "T1557", "name": "Adversary-in-the-Middle",
+                           "tactic": "Credential Access"}]
+
+
+def test_rule_declared_attack_override(config_path):
+    import yaml
+
+    # Add an `attack:` list to the existing rule in the isolated rules file.
+    rules_path = yaml.safe_load(open(config_path))["detection"]["rules_file"]
+    rules = yaml.safe_load(open(rules_path))
+    rules["wifi_rules"][0]["attack"] = ["T1595"]
+    open(rules_path, "w").write(yaml.safe_dump(rules))
+
+    engine = DetectionEngine(config_path)
+    detections = engine.analyze_wifi([_wifi_scan(ssid="EvilTwin")])
+    spoof = [d for d in detections if d.features.get("rule") == "ssid_spoof_suspect"][0]
+    ids = {t["id"] for t in spoof.features["attack"]}
+    assert ids == {"T1557", "T1595"}  # built-in + rule-declared override
+
+
 def test_phone_tamper_rule(engine):
     dp = {
         "tamper_suspect": True,
