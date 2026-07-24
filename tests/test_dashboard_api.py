@@ -78,6 +78,49 @@ def test_analytics_endpoint(manager_with_events):
     assert {t["description"] for t in a["top_descriptions"]} == {"low", "high"}
 
 
+def test_attack_coverage_endpoint(manager_with_events, monkeypatch):
+    events = manager_with_events
+    events.record("detection", {"id": "t1", "severity": 4, "sensor_type": "bluetooth",
+                                "features": {"attack": [
+                                    {"id": "T1430", "name": "Location Tracking",
+                                     "tactic": "Collection"}]}})
+    events.record("detection", {"id": "t2", "severity": 4, "sensor_type": "bluetooth",
+                                "features": {"attack": [
+                                    {"id": "T1430", "name": "Location Tracking",
+                                     "tactic": "Collection"}]}})
+    # event_store fixture manager lacks .history; enable flag already True.
+    cov = app.attack_coverage()
+    assert cov["attack_tagged"] == 2
+    assert cov["techniques"][0] == {"id": "T1430", "name": "Location Tracking", "count": 2}
+    assert cov["by_tactic"] == {"Collection": 2}
+    assert "T1430" in cov["catalog"]
+
+
+def test_attack_coverage_counts_full_population_past_cap(manager_with_events):
+    events = manager_with_events
+    tag = [{"id": "T1595", "name": "Active Scanning", "tactic": "Reconnaissance"}]
+    for i in range(1500):  # more than MAX_LIMIT
+        events.record("detection", {"id": f"n{i}", "severity": 3, "features": {"attack": tag}})
+    cov = app.attack_coverage()
+    # All 1500 tagged detections counted, not truncated at MAX_LIMIT.
+    assert cov["techniques"][0] == {"id": "T1595", "name": "Active Scanning", "count": 1500}
+
+
+def test_attack_coverage_history_fallback_respects_window(monkeypatch):
+    store = DetectionStore()
+    tag = [{"id": "T1430", "name": "Location Tracking", "tactic": "Collection"}]
+    store.add({"id": "old", "severity": 4, "features": {"attack": tag},
+               "timestamp": "2026-01-01T00:00:00+00:00"})
+    store.add({"id": "new", "severity": 4, "features": {"attack": tag},
+               "timestamp": "2026-06-01T00:00:00+00:00"})
+    # event_store disabled -> falls back to in-memory history.
+    engine = SimpleNamespace(event_store=SimpleNamespace(enabled=False), history=store)
+    monkeypatch.setattr(app, "_manager", SimpleNamespace(detection_engine=engine))
+
+    cov = app.attack_coverage(since="2026-05-01T00:00:00+00:00")
+    assert cov["attack_tagged"] == 1  # only the in-window "new" detection
+
+
 def test_endpoints_safe_without_manager(monkeypatch):
     monkeypatch.setattr(app, "_manager", None)
     assert app.detections() == []
@@ -85,6 +128,9 @@ def test_endpoints_safe_without_manager(monkeypatch):
     assert app.events() == []
     assert app.events_summary()["total"] == 0
     assert app.analytics()["counts"] == []
+    cov = app.attack_coverage()
+    assert cov["attack_tagged"] == 0
+    assert "catalog" in cov  # schema stays consistent without a manager
 
 
 def test_detections_pyramid_level_filter(monkeypatch):
