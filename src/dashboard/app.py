@@ -201,17 +201,41 @@ def attack_coverage(since: Optional[str] = None, until: Optional[str] = None):
     reference. Falls back to the in-memory detections when persistence is off.
     """
     if not _manager:
-        return {"total_detections": 0, "attack_tagged": 0, "techniques": [], "by_tactic": {}}
+        return {
+            "total_detections": 0, "attack_tagged": 0, "techniques": [],
+            "by_tactic": {}, "catalog": attack.TECHNIQUES,
+        }
     engine = _manager.detection_engine
     if getattr(engine.event_store, "enabled", False):
-        records = engine.event_store.recent(
-            limit=MAX_LIMIT, event_type="detection", since=since, until=until,
+        # Stream the full matching population (not just a page) so coverage is
+        # accurate over large or time-bounded windows.
+        records = engine.event_store.iter_all(
+            event_type="detection", since=since, until=until,
         )
     else:
-        records = engine.history.recent(limit=MAX_LIMIT)
+        # In-memory history is bounded; apply the same time window here.
+        records = _within_window(engine.history.recent(limit=MAX_LIMIT), since, until)
     coverage = attack.summarize(records)
     coverage["catalog"] = attack.TECHNIQUES
     return coverage
+
+
+def _within_window(records, since: Optional[str], until: Optional[str]):
+    """Filter detection dicts to those whose ISO ``timestamp`` is in-window."""
+    if not since and not until:
+        return records
+    out = []
+    for rec in records:
+        ts = rec.get("timestamp")
+        if not isinstance(ts, str):
+            out.append(rec)  # cannot time-filter; keep for completeness
+            continue
+        if since and ts < since:
+            continue
+        if until and ts > until:
+            continue
+        out.append(rec)
+    return out
 
 
 def _ssl_options(secure: bool, server: Dict[str, Any]) -> Dict[str, Any]:

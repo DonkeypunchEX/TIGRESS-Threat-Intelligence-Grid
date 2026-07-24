@@ -94,6 +94,43 @@ class EventStore:
         """Convenience wrapper for recording a detection dict."""
         self.record("detection", detection, severity=detection.get("severity"))
 
+    def iter_all(
+        self,
+        event_type: Optional[str] = None,
+        min_severity: Optional[int] = None,
+        sensor_type: Optional[str] = None,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
+        text: Optional[str] = None,
+        batch: int = 1000,
+    ):
+        """Yield *every* matching event (oldest first), not just a page.
+
+        Unlike :meth:`recent` (bounded by ``MAX_LIMIT`` for API responses), this
+        streams the full matching population via keyset pagination on ``id``, so
+        aggregations like ATT&CK coverage represent all events without capping
+        or loading the whole table into memory. Each batch is fetched under the
+        lock so writers are never blocked for the length of a full scan.
+        """
+        where, base_params = self._filters(
+            event_type, min_severity, sensor_type, since, until, text
+        )
+        keyset = "AND id > ?" if where else "WHERE id > ?"
+        # `where`/`keyset` are static fragments; all values are bound params.
+        sql = f"SELECT * FROM events {where} {keyset} ORDER BY id ASC LIMIT ?"  # nosec B608
+        last_id = 0
+        page = max(1, int(batch))
+        while True:
+            with self._lock:
+                rows = self._conn.execute(sql, [*base_params, last_id, page]).fetchall()
+            if not rows:
+                return
+            for row in rows:
+                yield _row_to_dict(row)
+            last_id = rows[-1]["id"]
+            if len(rows) < page:
+                return
+
     def recent(
         self,
         limit: int = 50,

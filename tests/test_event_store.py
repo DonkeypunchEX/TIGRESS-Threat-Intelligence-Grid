@@ -84,6 +84,22 @@ def test_persists_across_reopen(tmp_path):
     assert len(reopened.recent(event_type="detection")) == 2
 
 
+def test_iter_all_yields_full_population_past_the_cap(tmp_path):
+    store = EventStore(str(tmp_path / "events.db"))
+    for i in range(2500):  # well past MAX_LIMIT and the batch size
+        store.record("detection", {"id": str(i), "severity": 1})
+    ids = [r["data"]["id"] for r in store.iter_all(event_type="detection", batch=100)]
+    assert len(ids) == 2500
+    assert ids[0] == "0" and ids[-1] == "2499"  # oldest first, nothing dropped
+
+
+def test_iter_all_respects_filters(tmp_path):
+    store = EventStore(str(tmp_path / "events.db"))
+    _seed(store)
+    assert len(list(store.iter_all(event_type="detection"))) == 2
+    assert len(list(store.iter_all(since="2026-05-02T00:00:00+00:00"))) == 2
+
+
 def test_recent_caps_limit(tmp_path, monkeypatch):
     import src.core.event_store as es
     monkeypatch.setattr(es, "MAX_LIMIT", 2)

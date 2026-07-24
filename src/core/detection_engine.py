@@ -105,14 +105,32 @@ class DetectionEngine:
         self._load_models()
 
     def _load_attack_overrides(self) -> Dict[str, List[str]]:
-        """Collect ``attack:`` technique lists declared on rules in rules.yaml."""
+        """Collect valid ``attack:`` technique lists declared on rules in rules.yaml.
+
+        Only a list of non-empty technique-id strings is accepted; a scalar
+        (``attack: T1557``) or any malformed value is skipped with a warning
+        rather than silently char-split by ``list()`` into bogus ids.
+        """
         overrides: Dict[str, List[str]] = {}
         for section in (self._rules or {}).values():
             if not isinstance(section, list):
                 continue
             for rule in section:
-                if isinstance(rule, dict) and rule.get("id") and rule.get("attack"):
-                    overrides[rule["id"]] = list(rule["attack"])
+                if not (isinstance(rule, dict) and rule.get("id")):
+                    continue
+                ids = rule.get("attack")
+                if ids is None:
+                    continue
+                if isinstance(ids, list) and all(
+                    isinstance(t, str) and t.strip() for t in ids
+                ):
+                    overrides[rule["id"]] = list(ids)
+                else:
+                    logger.warning(
+                        "Ignoring malformed 'attack' on rule %s: expected a list "
+                        "of technique-id strings, got %r",
+                        rule["id"], ids,
+                    )
         return overrides
 
     def _load_models(self):

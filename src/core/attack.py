@@ -65,8 +65,9 @@ def resolve(
 ) -> List[Dict[str, str]]:
     """Return the ATT&CK technique(s) a detection dict evidences.
 
-    ``overrides`` maps a rule id to technique ids and takes precedence over the
-    built-in map (used for ``attack:`` declarations in ``config/rules.yaml``).
+    ``overrides`` maps a rule id to technique ids (from ``attack:`` declarations
+    in ``config/rules.yaml``); its ids are merged with the built-in map as a
+    union and then deduplicated — overrides *extend*, they do not replace.
     Returns an empty list when nothing maps — detections are never tagged with a
     guessed technique.
     """

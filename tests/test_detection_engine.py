@@ -101,6 +101,23 @@ def test_rule_declared_attack_override(config_path):
     assert ids == {"T1557", "T1595"}  # built-in + rule-declared override
 
 
+def test_scalar_attack_declaration_is_rejected_not_char_split(config_path):
+    import yaml
+
+    rules_path = yaml.safe_load(open(config_path))["detection"]["rules_file"]
+    rules = yaml.safe_load(open(rules_path))
+    rules["wifi_rules"][0]["attack"] = "T1557"  # scalar, not a list
+    open(rules_path, "w").write(yaml.safe_dump(rules))
+
+    engine = DetectionEngine(config_path)
+    # The malformed override is skipped (not char-split into ['T','1',...]).
+    assert engine._attack_overrides == {}
+    detections = engine.analyze_wifi([_wifi_scan(ssid="EvilTwin")])
+    spoof = [d for d in detections if d.features.get("rule") == "ssid_spoof_suspect"][0]
+    # Built-in mapping still applies cleanly.
+    assert [t["id"] for t in spoof.features["attack"]] == ["T1557"]
+
+
 def test_phone_tamper_rule(engine):
     dp = {
         "tamper_suspect": True,

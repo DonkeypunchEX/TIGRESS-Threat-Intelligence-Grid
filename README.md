@@ -100,10 +100,13 @@ JSONL and signed audit log, which remain the authoritative record. Enable it via
 are parameterized — there is no raw-SQL endpoint.
 
 ### MITRE ATT&CK mapping
-Every detection is tagged with the ATT&CK technique(s) it evidences, so findings
+Detections are tagged with the ATT&CK technique(s) they evidence, so findings
 speak the framework SOCs already use. Tagging is centralized in
-`src/core/attack.py` and applied once in the engine, so rule, ML, correlation,
-and network detections are all covered — e.g. an evil-twin SSID →
+`src/core/attack.py` and every detection (rule, ML, correlation, network) is
+evaluated the same way in one place; those matching a mapped rule or id-prefix
+receive tags, while context-dependent findings (ML anomalies, raw Suricata
+signatures, multi-phase progressions) are left untagged rather than guessed —
+e.g. an evil-twin SSID →
 [T1557](https://attack.mitre.org/techniques/T1557/) (Adversary-in-the-Middle), a
 BLE tracker → [T1430](https://attack.mitre.org/techniques/T1430/) (Location
 Tracking), a SYN-knock covert channel →
