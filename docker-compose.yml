@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  tigress:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tigress
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./config:/app/config
+      - ./logs:/app/logs
+    environment:
+      - TIGRESS_POSTURE=normal
+      - TIGRESS_API_TOKEN=change-me-in-production
+      - PYTHONPATH=/app
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8080/health').raise_for_status()"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  # Development service with hot reload
+  tigress-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: tigress-dev
+    ports:
+      - "8080:8080"
+    volumes:
+      - .:/app
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./config:/app/config
+    environment:
+      - TIGRESS_POSTURE=normal
+      - TIGRESS_API_TOKEN=dev-token
+      - PYTHONPATH=/app
+    command: ["uvicorn", "src.dashboard.app:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
+    profiles:
+      - dev

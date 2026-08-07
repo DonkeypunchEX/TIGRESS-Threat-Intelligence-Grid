@@ -1,5 +1,9 @@
 # TIGRESS – Threat Intelligence Grid for Android
 
+[![CI](https://github.com/DonkeypunchEX/TIGRESS-Threat-Intelligence-Grid/actions/workflows/ci.yml/badge.svg)](https://github.com/DonkeypunchEX/TIGRESS-Threat-Intelligence-Grid/actions/workflows/ci.yml)
+[![Coverage](https://codecov.io/gh/DonkeypunchEX/TIGRESS-Threat-Intelligence-Grid/branch/main/graph/badge.svg)](https://codecov.io/gh/DonkeypunchEX/TIGRESS-Threat-Intelligence-Grid)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 Security monitoring framework for Android/Termux: WiFi anomaly detection, physical tamper detection, and ML-based threat analysis.
 
 ## Features
@@ -29,7 +33,10 @@ Security monitoring framework for Android/Termux: WiFi anomaly detection, physic
 ## Installation
 ```bash
 pkg install python termux-api
+# Using pip (traditional)
 pip install -r requirements.txt
+# Or using modern pyproject.toml (recommended)
+pip install -e .
 bash scripts/harden.sh
 ```
 
@@ -390,8 +397,19 @@ python scripts/phyphox_harmonics.py /path/to/Audio_Spectrum_export.zip   # or th
 
 ## Development & Testing
 ```bash
+# Install in development mode (recommended)
+pip install -e ".[dev]"
+
+# Or using traditional requirements files
 pip install -r requirements-dev.txt
+
+# Run tests
 pytest
+
+# Run with parallel execution (requires pytest-xdist)
+pytest -n auto
+
+# Lint and format
 ruff check src tests
 ```
 The test suite is hermetic — it writes only to pytest temp directories and does

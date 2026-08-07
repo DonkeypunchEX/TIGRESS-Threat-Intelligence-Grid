@@ -11,6 +11,7 @@ meta-detections.
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Lock
 from typing import Any, Dict, List, Optional
 
 import joblib
@@ -89,18 +90,49 @@ class DetectionEngine:
         self.correlation = CorrelationEngine(corr_cfg, movement=self.movement)
         self._severity_boost = int(det.get("severity_boost", 0))
 
+        self._model_paths: Dict[str, str] = det.get("ml_models", {})
+        self._training_samples = det.get("training_samples", 300)
+        
+        # Lazy-loaded model components
         self._models: Dict[str, IsolationForest] = {}
         self._scalers: Dict[str, StandardScaler] = {}
         self._fitted: Dict[str, bool] = {}
         self._training_data: Dict[str, List] = {"wifi": [], "phone": [], "bluetooth": []}
+        self._model_load_lock = Lock()
+        self._models_loaded = False
 
         # Addresses ever sighted by remote BLE nodes (lazy-loaded from disk),
         # used to compute new-device counts for ingested scans.
         self._remote_ble_seen: Optional[set] = None
 
-        self._load_models()
-
     def _load_models(self):
+        """Legacy method - now calls lazy loader for backward compatibility."""
+        self._ensure_models_loaded()
+
+    def _ensure_models_loaded(self):
+        """Lazy load models on first use to improve startup performance."""
+        if self._models_loaded:
+            return
+        
+        with self._model_load_lock:
+            if self._models_loaded:
+                return
+            
+            for stype, path in self._model_paths.items():
+                try:
+                    self._models[stype] = joblib.load(path)
+                    self._scalers[stype] = joblib.load(path + ".scaler")
+                    self._fitted[stype] = True
+                    logger.info(f"Loaded {stype} model from {path}")
+                except FileNotFoundError:
+                    self._models[stype] = IsolationForest(
+                        contamination=0.1, n_estimators=100, random_state=42
+                    )
+                    self._scalers[stype] = StandardScaler()
+                    self._fitted[stype] = False
+                    logger.info(f"Initialised fresh {stype} model (needs training)")
+            
+            self._models_loaded = True
         for stype, path in self._model_paths.items():
             try:
                 self._models[stype] = joblib.load(path)
@@ -253,6 +285,8 @@ class DetectionEngine:
             )
 
     def _ml_anomaly(self, data: List[dict], stype: str) -> List[Detection]:
+        # Lazy load models on first use
+        self._ensure_models_loaded()
         features = self._extract(data, stype)
         if features is None or len(features) == 0:
             return []

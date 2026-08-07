@@ -1,0 +1,33 @@
+# TIGRESS Development Dockerfile
+# Includes all development dependencies and tools
+
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements files
+COPY requirements.txt requirements-dev.txt .
+
+# Install all dependencies (including dev)
+RUN pip install --no-cache-dir --user -r requirements-dev.txt
+
+# Copy application code
+COPY . .
+
+# Set environment variables
+ENV PYTHONPATH=/app
+ENV TIGRESS_POSTURE=normal
+ENV TIGRESS_API_TOKEN=dev-token
+
+# Expose dashboard port
+EXPOSE 8080
+
+# Default command for development (with hot reload)
+CMD ["uvicorn", "src.dashboard.app:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]

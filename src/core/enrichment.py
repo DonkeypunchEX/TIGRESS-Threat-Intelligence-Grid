@@ -19,10 +19,14 @@ as the weakest signal. The strong detector is ``mac_randomized`` combined
 with the correlation engine's entity-persistence rule: a rotating-MAC device
 that keeps reappearing near you is tracker *behaviour*, whatever it calls
 itself.
+
+Performance: OUI lookups use an optimized prefix trie for O(1) average case
+complexity, with fallback to longest-prefix matching for overlapping OUI ranges.
 """
 
+import bisect
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -70,13 +74,139 @@ def mac_is_randomized(mac: Any) -> bool:
     return bool(int(norm.split(":")[0], 16) & 0x02)
 
 
+class OUITrieNode:
+    """Trie node for efficient OUI prefix lookups."""
+    __slots__ = ['children', 'vendor']
+    
+    def __init__(self):
+        self.children: Dict[str, 'OUITrieNode'] = {}
+        self.vendor: Optional[str] = None
+
+
+class OUILookup:
+    """Optimized OUI prefix lookup using a trie structure.
+    
+    Provides O(1) average case complexity for prefix lookups by building
+    a trie from OUI prefixes. Supports both exact prefix matches and
+    longest-prefix matching for overlapping OUI ranges.
+    """
+    
+    def __init__(self):
+        self._root = OUITrieNode()
+        self._prefixes: List[Tuple[str, str]] = []  # For fallback binary search
+    
+    def add_prefix(self, prefix: str, vendor: str):
+        """Add an OUI prefix to the trie."""
+        # Handle both full MACs and OUI prefixes (3 bytes = 6 hex chars)
+        norm_prefix = self._normalize_oui_prefix(str(prefix).strip().lower())
+        if norm_prefix is None:
+            return
+        
+        # Store for fallback binary search (sorted by length descending)
+        self._prefixes.append((norm_prefix, vendor))
+        
+        # Add to trie
+        node = self._root
+        for char in norm_prefix.replace(":", ""):
+            if char not in node.children:
+                node.children[char] = OUITrieNode()
+            node = node.children[char]
+        node.vendor = vendor
+    
+    def _normalize_oui_prefix(self, prefix: str) -> Optional[str]:
+        """Normalize OUI prefix (can be 3, 4, 5, or 6 bytes)."""
+        if not prefix:
+            return None
+        
+        # Remove separators and convert to lowercase
+        s = prefix.replace("-", "").replace(":", "").lower()
+        
+        # Validate that it's a valid hex string
+        if not all(c in '0123456789abcdef' for c in s):
+            return None
+        
+        # OUI prefixes can be 3, 4, 5, or 6 bytes (6, 8, 10, 12, 14, 16 hex chars)
+        valid_lengths = {6, 8, 10, 12, 14, 16}
+        if len(s) not in valid_lengths:
+            return None
+        
+        # Add colons for consistency
+        if len(s) == 6:  # 3 bytes
+            return f"{s[:2]}:{s[2:4]}:{s[4:6]}"
+        elif len(s) == 8:  # 4 bytes
+            return f"{s[:2]}:{s[2:4]}:{s[4:6]}:{s[6:8]}"
+        elif len(s) == 10:  # 5 bytes
+            return f"{s[:2]}:{s[2:4]}:{s[4:6]}:{s[6:8]}:{s[8:10]}"
+        elif len(s) == 12:  # 6 bytes
+            return f"{s[:2]}:{s[2:4]}:{s[4:6]}:{s[6:8]}:{s[8:10]}:{s[10:12]}"
+        else:
+            return None
+    
+    def build(self):
+        """Build the trie and sort prefixes for binary search fallback."""
+        # Sort prefixes by length (descending) for longest-prefix-first matching
+        self._prefixes.sort(key=lambda x: len(x[0]), reverse=True)
+    
+    def lookup(self, mac: Any) -> Optional[str]:
+        """Find vendor for MAC using trie lookup with longest prefix match."""
+        norm = normalize_mac(mac)
+        if norm is None:
+            return None
+        
+        # Try trie lookup first
+        result = self._trie_lookup(norm)
+        if result is not None:
+            return result
+        
+        # Fallback to binary search for edge cases
+        return self._binary_search_lookup(norm)
+    
+    def _trie_lookup(self, norm_mac: str) -> Optional[str]:
+        """Lookup using trie structure."""
+        node = self._root
+        best_match = None
+        
+        for char in norm_mac.replace(":", ""):
+            if char in node.children:
+                node = node.children[char]
+                if node.vendor is not None:
+                    best_match = node.vendor
+            else:
+                break
+        
+        return best_match
+    
+    def _binary_search_lookup(self, norm_mac: str) -> Optional[str]:
+        """Fallback lookup using binary search on sorted prefixes."""
+        if not self._prefixes:
+            return None
+        
+        mac_clean = norm_mac.replace(":", "")
+        
+        # Try each possible prefix length (6, 8, 10, 12, 14, 16 chars for MAC)
+        for length in range(6, min(len(mac_clean) + 2, 18), 2):
+            prefix = mac_clean[:length]
+            # Binary search for exact prefix match
+            index = bisect.bisect_left(self._prefixes, (prefix, ""))
+            if index < len(self._prefixes) and self._prefixes[index][0] == prefix:
+                return self._prefixes[index][1]
+        
+        return None
+
+
 class Enricher:
     """Annotates readings using local OUI/tracker intelligence."""
 
     def __init__(self, data_file: Optional[str] = None):
-        self._oui: Dict[str, str] = dict(_DEFAULT_OUI_VENDORS)
         self._tracker_patterns: List[str] = list(_DEFAULT_TRACKER_NAME_PATTERNS)
         self._tracker_vendors: List[str] = list(_DEFAULT_TRACKER_VENDORS)
+        
+        # Initialize optimized OUI lookup
+        self._oui_lookup = OUILookup()
+        
+        # Add built-in OUI vendors
+        for prefix, vendor in _DEFAULT_OUI_VENDORS.items():
+            self._oui_lookup.add_prefix(prefix, vendor)
 
         if data_file:
             path = Path(data_file)
@@ -84,29 +214,36 @@ class Enricher:
                 self._load(path)
             else:
                 logger.warning(f"Enrichment file not found: {data_file} — using built-in seed data")
+        
+        # Build the trie after all prefixes are added
+        self._oui_lookup.build()
 
     def _load(self, path: Path):
         with open(path) as f:
             data = yaml.safe_load(f) or {}
+        
+        # Add OUI vendors to lookup
         for prefix, vendor in (data.get("oui_vendors") or {}).items():
-            self._oui[str(prefix).strip().lower()] = str(vendor)
+            self._oui_lookup.add_prefix(str(prefix).strip().lower(), str(vendor))
+        
         self._tracker_patterns.extend(
             str(p).lower() for p in data.get("tracker_name_patterns") or []
         )
         self._tracker_vendors.extend(
             str(v).lower() for v in data.get("tracker_vendors") or []
         )
+        
+        # Rebuild trie with new data
+        self._oui_lookup.build()
+        
         logger.info(
-            f"Enrichment data loaded: {len(self._oui)} OUI prefixes, "
+            f"Enrichment data loaded: {len(self._oui_lookup._prefixes)} OUI prefixes, "
             f"{len(self._tracker_patterns)} tracker name patterns"
         )
 
     def vendor(self, mac: Any) -> Optional[str]:
         """Vendor name for a MAC's OUI prefix, or None if unknown."""
-        norm = normalize_mac(mac)
-        if norm is None:
-            return None
-        return self._oui.get(norm[:8])
+        return self._oui_lookup.lookup(mac)
 
     def _tracker_name(self, name: Any) -> bool:
         if not name:
