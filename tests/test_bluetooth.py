@@ -1,3 +1,5 @@
+import time
+
 from src.core.detection_engine import DetectionEngine
 from src.sensors.bluetooth_sensor import BluetoothSensor
 
@@ -24,12 +26,14 @@ def test_address_tolerates_key_variants():
 
 
 def test_known_devices_round_trip(tmp_path):
+    # Known lists are now timestamped maps (addr -> last_seen epoch), pruned by
+    # age; the set of addresses must still survive a save/reload cycle.
     f = tmp_path / "known.txt"
     sensor = BluetoothSensor("bluetooth_sensor", {"known_devices_file": str(f)})
-    sensor._known_addrs = {"AA:BB", "CC:DD"}
+    sensor._known_addrs = {"aa:bb": time.time(), "cc:dd": time.time()}
     sensor._save_known()
     reloaded = BluetoothSensor("bluetooth_sensor", {"known_devices_file": str(f)})
-    assert reloaded._known_addrs == {"AA:BB", "CC:DD"}
+    assert set(reloaded._known_addrs) == {"aa:bb", "cc:dd"}
 
 
 def test_connect_false_without_backend():

@@ -1,16 +1,32 @@
 """Detection engine: rule-based and Isolation Forest anomaly detection.
 
 Combines per-reading YAML rules with an unsupervised ML model per sensor type
-("wifi", "phone"), dispatching any resulting detections to the forensic log and
-push notifier. Readings are enriched with local threat intel (vendor, tracker
-fingerprints, randomized-MAC flags) before rules run, and every detection is
-fed through the correlation engine, which can emit higher-order (TTP-level)
-meta-detections.
+("wifi", "phone", "bluetooth"), dispatching any resulting detections to the
+forensic log and push notifier. Readings are enriched with local threat intel
+(vendor, tracker fingerprints, randomized-MAC flags) before rules run, and
+every detection is fed through the correlation engine, which can emit
+higher-order (TTP-level) meta-detections.
+
+ML feature space (documented limitation)
+-----------------------------------------
+Isolation Forest models use a small, coarse feature vector per sensor type so
+they stay trainable on-device with modest sample counts:
+
+- wifi:       [ap_count, new_ap_count, mean_rssi, randomized_mac_ratio]
+- phone:      [magnitude, |magnitude - GRAVITY|]
+- bluetooth:  [device_count, new_device_count, mean_rssi, tracker_count]
+
+This is intentionally thin: it catches gross environmental shifts, not fine
+tracker fingerprints. Behaviour-over-time (correlation + movement) remains the
+primary detector. Changing the schema invalidates saved models — delete
+``models/*.pkl`` to retrain.
 """
 
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Lock
 from typing import Any, Dict, List, Optional
 
 import joblib
@@ -26,14 +42,27 @@ from src.core.movement import MovementTracker
 from src.utils.alerting import AlertDispatcher
 from src.utils.config_loader import ConfigLoader
 from src.utils.forensic_logger import ForensicLogger
+from src.utils.known_list import load_known, prune_known, save_known
 from src.utils.logger import get_logger
+
+GRAVITY = 9.81
 
 logger = get_logger(__name__)
 
 
 @dataclass
 class Detection:
-    """A single detection emitted by a rule or the ML model."""
+    """A single detection emitted by a rule or the ML model.
+
+    ``phase`` and ``weight`` implement Jack Crook's I-BAD (Insider Behavioural
+    Anomaly Detection) framing: a detection is tagged with the kill-chain
+    *phase* it belongs to (e.g. ``reconnaissance``, ``tracking``, ``evasion``)
+    and a numeric *weight*. The correlation engine sums weight and counts
+    distinct phases per entity to surface behavioural *progression* — a
+    stronger, TTP-level signal than any single per-reading anomaly. Both
+    default to "unscored" so detections without the metadata simply do not
+    contribute to progression scoring.
+    """
 
     id: str
     sensor_type: str
@@ -43,6 +72,8 @@ class Detection:
     sensor_id: str
     description: str
     features: Dict[str, Any] = field(default_factory=dict)
+    phase: Optional[str] = None
+    weight: float = 0.0
 
 
 class DetectionEngine:
@@ -76,27 +107,40 @@ class DetectionEngine:
         self._scalers: Dict[str, StandardScaler] = {}
         self._fitted: Dict[str, bool] = {}
         self._training_data: Dict[str, List] = {"wifi": [], "phone": [], "bluetooth": []}
+        self._models_loaded = False
+        self._model_load_lock = Lock()
 
-        # Addresses ever sighted by remote BLE nodes (lazy-loaded from disk),
+        # addr -> last_seen epoch for remote BLE nodes (lazy-loaded from disk),
         # used to compute new-device counts for ingested scans.
-        self._remote_ble_seen: Optional[set] = None
+        self._remote_ble_seen: Optional[Dict[str, float]] = None
 
         self._load_models()
 
     def _load_models(self):
-        for stype, path in self._model_paths.items():
-            try:
-                self._models[stype] = joblib.load(path)
-                self._scalers[stype] = joblib.load(path + ".scaler")
-                self._fitted[stype] = True
-                logger.info(f"Loaded {stype} model from {path}")
-            except FileNotFoundError:
-                self._models[stype] = IsolationForest(
-                    contamination=0.1, n_estimators=100, random_state=42
-                )
-                self._scalers[stype] = StandardScaler()
-                self._fitted[stype] = False
-                logger.info(f"Initialised fresh {stype} model (needs training)")
+        """Load (or lazily initialise) an Isolation Forest per sensor type.
+
+        Guarded by a lock and an idempotent flag so concurrent sensor threads
+        can't double-load: the first caller loads, the rest return immediately.
+        """
+        if self._models_loaded:
+            return
+        with self._model_load_lock:
+            if self._models_loaded:
+                return
+            for stype, path in self._model_paths.items():
+                try:
+                    self._models[stype] = joblib.load(path)
+                    self._scalers[stype] = joblib.load(path + ".scaler")
+                    self._fitted[stype] = True
+                    logger.info(f"Loaded {stype} model from {path}")
+                except FileNotFoundError:
+                    self._models[stype] = IsolationForest(
+                        contamination=0.1, n_estimators=100, random_state=42
+                    )
+                    self._scalers[stype] = StandardScaler()
+                    self._fitted[stype] = False
+                    logger.info(f"Initialised fresh {stype} model (needs training)")
+            self._models_loaded = True
 
     def _save_model(self, stype: str):
         path = self._model_paths.get(stype)
@@ -137,13 +181,15 @@ class DetectionEngine:
         bt_cfg = self.config.get("sensors", {}).get("bluetooth", {})
         return Path(bt_cfg.get("known_remote_file", "data/known_remote_ble.txt"))
 
-    def _remote_ble_known(self) -> set:
+    def _remote_ble_max_age_days(self) -> int:
+        bt_cfg = self.config.get("sensors", {}).get("bluetooth", {})
+        return int(bt_cfg.get("known_max_age_days", 30))
+
+    def _remote_ble_known(self) -> Dict[str, float]:
+        """Remote-BLE seen-set as ``addr -> last_seen epoch``, pruned by age."""
         if self._remote_ble_seen is None:
-            path = self._remote_ble_known_file()
-            self._remote_ble_seen = (
-                {ln.strip() for ln in path.read_text().splitlines() if ln.strip()}
-                if path.exists()
-                else set()
+            self._remote_ble_seen = prune_known(
+                load_known(self._remote_ble_known_file()), self._remote_ble_max_age_days()
             )
         return self._remote_ble_seen
 
@@ -176,12 +222,14 @@ class DetectionEngine:
             rejected += 1
 
         known = self._remote_ble_known()
+        now = time.time()
         new = [d for d in devices if d["address"] not in known]
-        if new:
-            known.update(d["address"] for d in new)
-            path = self._remote_ble_known_file()
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("\n".join(sorted(known)) + "\n")
+        for d in devices:  # refresh last-seen for every present device
+            known[d["address"]] = now
+        # Prune on every write so the file cannot grow without bound.
+        known = prune_known(known, self._remote_ble_max_age_days())
+        self._remote_ble_seen = known
+        save_known(self._remote_ble_known_file(), known)
 
         scan = {
             "devices": devices,
@@ -279,19 +327,73 @@ class DetectionEngine:
                 timestamp=pd.Timestamp.now(tz="UTC").isoformat(),
                 sensor_id="ml",
                 description=f"ML anomaly detected in {stype} data",
+                phase="anomaly",
+                weight=1.0,
                 features={"isolation_score": float(score)},
             ))
         return detections
 
     def _extract(self, data: List[dict], stype: str) -> Optional[np.ndarray]:
+        """Build the per-sensor Isolation Forest feature matrix.
+
+        Feature schema (intentionally coarse so it stays trainable on-device):
+
+        - wifi:       ``[ap_count, new_ap_count, mean_rssi, randomized_mac_ratio]``
+        - phone:      ``[magnitude, |magnitude - GRAVITY|]``
+        - bluetooth:  ``[device_count, new_device_count, mean_rssi, tracker_count]``
+
+        This catches gross environmental shifts, not fine tracker fingerprints —
+        behaviour-over-time (correlation + movement) remains the primary
+        detector. Changing dimensionality invalidates saved models: delete
+        ``models/*.pkl`` and retrain.
+        """
         if stype == "wifi":
-            return np.array([[d.get("ap_count", 0), d.get("new_ap_count", 0)] for d in data])
+            rows = []
+            for d in data:
+                networks = d.get("networks") or []
+                rssis, randomized = [], 0
+                for net in networks:
+                    enriched = self.enricher.enrich_wifi(net)
+                    r = net.get("level", net.get("rssi", net.get("RSSI")))
+                    if r is not None:
+                        try:
+                            rssis.append(float(r))
+                        except (TypeError, ValueError):
+                            pass
+                    if enriched.get("mac_randomized"):
+                        randomized += 1
+                mean_rssi = float(np.mean(rssis)) if rssis else 0.0
+                ratio = (randomized / len(networks)) if networks else 0.0
+                rows.append([d.get("ap_count", 0), d.get("new_ap_count", 0), mean_rssi, ratio])
+            return np.array(rows, dtype=float)
+
         if stype == "phone":
-            return np.array([[d.get("magnitude", 0)] for d in data])
-        if stype == "bluetooth":
             return np.array(
-                [[d.get("device_count", 0), d.get("new_device_count", 0)] for d in data]
+                [[float(d.get("magnitude", 0) or 0),
+                  abs(float(d.get("magnitude", 0) or 0) - GRAVITY)] for d in data],
+                dtype=float,
             )
+
+        if stype == "bluetooth":
+            rows = []
+            for d in data:
+                devices = d.get("devices") or []
+                rssis, trackers = [], 0
+                for dev in devices:
+                    enriched = self.enricher.enrich_bluetooth(dev)
+                    r = dev.get("rssi", dev.get("RSSI"))
+                    if r is not None:
+                        try:
+                            rssis.append(float(r))
+                        except (TypeError, ValueError):
+                            pass
+                    if enriched.get("is_tracker"):
+                        trackers += 1
+                mean_rssi = float(np.mean(rssis)) if rssis else 0.0
+                rows.append(
+                    [d.get("device_count", 0), d.get("new_device_count", 0), mean_rssi, trackers]
+                )
+            return np.array(rows, dtype=float)
         return None
 
     def _wifi_rules(self, scan: dict) -> List[Detection]:
@@ -313,6 +415,8 @@ class DetectionEngine:
                         timestamp=pd.Timestamp.now(tz="UTC").isoformat(),
                         sensor_id="wifi_sensor",
                         description=rule.get("description", rule["id"]),
+                        phase=rule.get("phase"),
+                        weight=float(rule.get("weight", 0.0)),
                         features={
                             "rule": rule["id"],
                             "bssid": net.get("BSSID"),
@@ -381,6 +485,8 @@ class DetectionEngine:
                         timestamp=pd.Timestamp.now(tz="UTC").isoformat(),
                         sensor_id="bluetooth_sensor",
                         description=rule.get("description", rule["id"]),
+                        phase=rule.get("phase"),
+                        weight=float(rule.get("weight", 0.0)),
                         features={
                             "rule": rule["id"],
                             "address": (

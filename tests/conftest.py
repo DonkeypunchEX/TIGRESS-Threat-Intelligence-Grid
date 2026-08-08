@@ -31,12 +31,17 @@ def config_path(tmp_path):
         "server": {"host": "127.0.0.1", "port": 8080},
         "sensors": {
             "enabled": ["wifi", "phone", "bluetooth"],
-            "wifi": {"alert_threshold": 3, "buffer_limit": 50},
+            "wifi": {
+                "alert_threshold": 3,
+                "buffer_limit": 50,
+                "known_max_age_days": 30,
+            },
             "phone": {"buffer_limit": 50},
             "bluetooth": {
                 "alert_threshold": 3,
                 "buffer_limit": 50,
                 "known_remote_file": str(tmp_path / "known_remote_ble.txt"),
+                "known_max_age_days": 30,
             },
         },
         "detection": {

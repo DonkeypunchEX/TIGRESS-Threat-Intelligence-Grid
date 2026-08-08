@@ -6,9 +6,10 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
 from src.sensors.base_sensor import BaseSensor
+from src.utils.known_list import load_known, prune_known, save_known
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -21,17 +22,17 @@ class WiFiSensor(BaseSensor):
         super().__init__(sensor_id, "wifi", config)
         self._interval = config.get("scan_interval", 30)
         self._known_file = Path(config.get("known_bssids_file", "data/known_bssids.txt"))
-        self._known_bssids: set = self._load_known()
+        # address -> last_seen epoch; pruned so a place visited once long ago
+        # stops diluting the "new AP" signal forever.
+        self._max_age_days = int(config.get("known_max_age_days", 30))
+        self._known_bssids: Dict[str, float] = prune_known(
+            load_known(self._known_file), self._max_age_days
+        )
         self._thread: Optional[threading.Thread] = None
 
-    def _load_known(self) -> set:
-        if not self._known_file.exists():
-            return set()
-        return {line.strip() for line in self._known_file.read_text().splitlines() if line.strip()}
-
     def _save_known(self):
-        self._known_file.parent.mkdir(exist_ok=True, parents=True)
-        self._known_file.write_text("\n".join(sorted(self._known_bssids)) + "\n")
+        self._known_bssids = prune_known(self._known_bssids, self._max_age_days)
+        save_known(self._known_file, self._known_bssids)
 
     def connect(self) -> bool:
         """Check the sensor backend is available; return True on success."""
@@ -83,9 +84,11 @@ class WiFiSensor(BaseSensor):
                 return None
 
             networks = json.loads(result.stdout)
-            bssids = {net.get("BSSID", "") for net in networks if net.get("BSSID")}
-            new_bssids = bssids - self._known_bssids
-            self._known_bssids.update(new_bssids)
+            bssids = {net.get("BSSID", "").lower() for net in networks if net.get("BSSID")}
+            now = time.time()
+            new_bssids = bssids - set(self._known_bssids)
+            for b in bssids:  # refresh last-seen for all, add the new ones
+                self._known_bssids[b] = now
 
             return {
                 "timestamp": datetime.now(timezone.utc).isoformat(),

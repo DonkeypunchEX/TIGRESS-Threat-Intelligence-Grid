@@ -59,6 +59,46 @@ def test_detections_are_recorded_in_history(engine):
     assert {d["id"] for d in recorded} == {d.id for d in detections}
 
 
+def test_wifi_feature_vector_is_four_dimensional(engine):
+    # Expanded schema: [ap_count, new_ap_count, mean_rssi, randomized_mac_ratio].
+    feats = engine._extract([_wifi_scan()], "wifi")
+    assert feats is not None
+    assert feats.shape == (1, 4)
+
+
+def test_phone_feature_vector_is_two_dimensional(engine):
+    # [magnitude, |magnitude - GRAVITY|].
+    feats = engine._extract([{"magnitude": 10.5}], "phone")
+    assert feats is not None
+    assert feats.shape == (1, 2)
+
+
+def test_bluetooth_feature_vector_is_four_dimensional(engine):
+    scan = {
+        "devices": [{"address": "aa:bb:cc:dd:ee:ff", "name": "x", "rssi": -60}],
+        "device_count": 1, "new_device_count": 0, "new_devices": [],
+    }
+    feats = engine._extract([scan], "bluetooth")
+    assert feats is not None
+    assert feats.shape == (1, 4)
+
+
+def test_rule_detection_carries_phase_and_weight(engine):
+    # Fixture BLE proximity rule has no phase/weight, so add one that does.
+    engine._rules.setdefault("bluetooth_rules", []).append({
+        "id": "ble_phased", "enabled": True, "description": "phased",
+        "severity": 3, "confidence": 0.7, "phase": "tracking", "weight": 2,
+        "conditions": [{"field": "rssi", "op": "gt", "value": "-50"}],
+    })
+    scan = {
+        "devices": [{"address": "aa:bb:cc:dd:ee:ff", "name": "x", "rssi": -40}],
+        "device_count": 1, "new_device_count": 0, "new_devices": [],
+    }
+    hits = [d for d in engine.analyze_bluetooth([scan])
+            if d.features.get("rule") == "ble_phased"]
+    assert hits and hits[0].phase == "tracking" and hits[0].weight == 2.0
+
+
 def test_phone_tamper_rule(engine):
     dp = {
         "tamper_suspect": True,

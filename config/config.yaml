@@ -24,6 +24,10 @@ sensors:
     scan_interval: 30
     alert_threshold: 3
     known_bssids_file: "data/known_bssids.txt"
+    # Drop BSSIDs not seen for this many days (0 = never prune). Keeps the
+    # known-list a rolling recent history so a place visited once doesn't
+    # dilute the "new AP" signal forever.
+    known_max_age_days: 30
   phone:
     sensor_type: accelerometer
     sample_rate: 1.0
@@ -34,6 +38,7 @@ sensors:
     alert_threshold: 5
     known_devices_file: "data/known_bt_devices.txt"
     known_remote_file: "data/known_remote_ble.txt"  # seen-set for /ingest/ble nodes
+    known_max_age_days: 30    # prune BT/remote known-lists by age (0 = never)
 
 detection:
   confidence_threshold: 0.6
@@ -69,11 +74,23 @@ detection:
         enabled: true
         min_detections: 8
         severity: 4
+      behavioral_progression: # I-BAD: entity accrues weight across phases
+        enabled: true
+        min_phases: 2         # distinct kill-chain phases for the same entity
+        min_weight: 4         # cumulative rule weight before it fires
+        severity: 5
+      ibad_outliers:          # I-BAD: Isolation Forest over entity score vectors
+        enabled: true
+        min_entities: 5       # need enough entities in the window to fit IF
+        contamination: 0.15
+        severity: 5
   ml_models:
     wifi: "models/wifi_anomaly.pkl"
     phone: "models/phone_anomaly.pkl"
     bluetooth: "models/bluetooth_anomaly.pkl"
   training_samples: 300
+  # NOTE: the ML feature schema is wifi/bt 4-D, phone 2-D. If you upgrade from
+  # an older 2-D/1-D build, delete models/ so Isolation Forest retrains cleanly.
 
 alerting:
   notification: true

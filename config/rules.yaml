@@ -1,13 +1,31 @@
+# Detection rules. Each rule describes a single behaviour of interest (a
+# "detection signal"); the correlation engine recombines signals into
+# higher-order alerts rather than stacking behaviours inside one rule.
+#
+# Optional `phase` and `weight` (Jack Crook's I-BAD framing) let the
+# correlation engine score an entity's behavioural *progression* across
+# kill-chain phases. Both are ignored by the rule matcher itself — they only
+# feed correlation. Phases used here: reconnaissance, tracking, evasion.
+#
+# Personal counter-surveillance defaults: the old corporate "SSID not CorpNet"
+# rule is disabled — prefer enrichment + correlation (persistence while moving)
+# over noisy SSID allowlists.
+
 wifi_rules:
+  # Disabled for personal use — an SSID-allowlist rule fires on nearly every
+  # public network. Re-enable and set `value` to your own SSID fragment to use
+  # it as a "networks that aren't mine" signal.
   - id: ssid_spoof_suspect
-    enabled: true
-    description: "SSID not in corporate whitelist"
+    enabled: false
+    description: "SSID not in personal allowlist (disabled by default)"
     severity: 3
     confidence: 0.8
+    phase: reconnaissance
+    weight: 1
     conditions:
       - field: SSID
         op: not_contains
-        value: "CorpNet"
+        value: "MyHomeNet"
 
 bluetooth_rules:
   - id: ble_close_proximity
@@ -15,6 +33,8 @@ bluetooth_rules:
     description: "Bluetooth device in very close proximity (strong RSSI)"
     severity: 3
     confidence: 0.75
+    phase: tracking
+    weight: 2
     conditions:
       - field: rssi
         op: gt
@@ -24,6 +44,8 @@ bluetooth_rules:
     description: "Bluetooth device name matches a known tracker pattern"
     severity: 4
     confidence: 0.8
+    phase: tracking
+    weight: 3
     conditions:
       - field: name
         op: contains
@@ -35,6 +57,8 @@ bluetooth_rules:
     description: "Device fingerprint matches a known tracker (name pattern or vendor OUI)"
     severity: 4
     confidence: 0.8
+    phase: tracking
+    weight: 3
     conditions:
       - field: is_tracker
         op: eq
@@ -44,6 +68,8 @@ bluetooth_rules:
     description: "Randomized-MAC device in close proximity (tracker-like behaviour)"
     severity: 3
     confidence: 0.7
+    phase: evasion
+    weight: 2
     conditions:
       - field: mac_randomized
         op: eq

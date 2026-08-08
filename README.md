@@ -51,6 +51,40 @@ bash scripts/tigress_launcher.sh --dummy
 The dashboard listens on the host/port from the `server` section of
 `config/config.yaml` (default `127.0.0.1:8080`).
 
+## Personal counter-surveillance quickstart
+1. **Allowlist your own gear** (watch, earbuds, car BT) so they never look
+   like trackers:
+   ```bash
+   mkdir -p data
+   printf "aa:bb:cc:dd:ee:ff\nbt:11:22:33:44:55:66\n" > data/trusted_entities.txt
+   ```
+2. **Baseline train** somewhere representative (collect your normal
+   environment once):
+   ```bash
+   bash scripts/tigress_launcher.sh --train
+   ```
+3. **Run day-to-day** (field mode adds integrity checks + mTLS):
+   ```bash
+   termux-wake-lock
+   bash scripts/tigress_launcher.sh          # or: --secure
+   ```
+4. **What to watch for** — in priority order:
+   - Persistence **while moving** (same MAC across places) → the strongest
+     "am I being followed?" signal
+   - Behavioural **progression**: one entity crossing multiple I-BAD phases
+     (`reconnaissance` → `tracking` → `evasion`)
+   - Tracker fingerprints / randomized-MAC devices at close RSSI
+   - Cross-sensor bursts (RF + physical together)
+   ```bash
+   export TIGRESS_API_TOKEN=s3cr3t
+   curl -H "Authorization: Bearer $TIGRESS_API_TOKEN" \
+     "http://127.0.0.1:8080/detections?pyramid_level=ttp&min_severity=4"
+   ```
+5. **After upgrading**, if the ML feature schema changed, delete `models/` and
+   retrain, then `python scripts/selftest.py --record-dir data/validation`.
+
+No Android? See the plumbing demo and the simulated field day below.
+
 ## Try it end-to-end (no Android)
 See the detection pipeline work in one command — it stands up a local webhook
 receiver, feeds the real engine threat-shaped WiFi/BLE scans, and shows
@@ -192,6 +226,15 @@ patterns into TTP-level meta-detections:
 - **cross_sensor** — multiple sensor domains (WiFi + BLE + physical) alerting
   inside one window: coordinated activity
 - **burst** — raw detection volume spiking: an actively hostile environment
+- **behavioral_progression** — Jack Crook's I-BAD framing: rules carry an
+  optional kill-chain `phase` (`reconnaissance`/`tracking`/`evasion`) and
+  `weight`; an entity that accumulates weight across several *distinct* phases
+  is showing multi-stage behaviour, not a stray reading — the strongest
+  single-entity TTP signal the grid assembles
+- **ibad_outliers** — an Isolation Forest over per-entity score vectors
+  (`[total_weight, phase_count, detection_count]`); once enough entities are in
+  the window, the entity that stands out from the surrounding population is
+  flagged
 
 Your own gear is excluded via a user-curated allowlist
 (`detection.correlation.allowlist` — inline entries and/or

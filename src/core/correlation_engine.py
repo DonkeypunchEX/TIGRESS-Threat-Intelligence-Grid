@@ -28,7 +28,10 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Deque, Dict, Iterable, List, Optional, Set
 
+import numpy as np
 import pandas as pd
+from sklearn.ensemble import IsolationForest
+from sklearn.preprocessing import StandardScaler
 
 from src.utils.logger import get_logger
 
@@ -131,6 +134,16 @@ class CorrelationEngine:
               enabled: true
               min_detections: 8    # raw detection volume in the window
               severity: 4
+            behavioral_progression:  # I-BAD: entity across weighted phases
+              enabled: true
+              min_phases: 2
+              min_weight: 4
+              severity: 5
+            ibad_outliers:           # I-BAD: Isolation Forest over entity scores
+              enabled: true
+              min_entities: 5
+              contamination: 0.15
+              severity: 5
     """
 
     def __init__(self, config: Optional[Dict[str, Any]] = None, movement=None):
@@ -149,6 +162,12 @@ class CorrelationEngine:
                               "severity": 4, **(rules.get("cross_sensor") or {})}
         self._burst = {"enabled": True, "min_detections": 8,
                        "severity": 4, **(rules.get("burst") or {})}
+        # I-BAD (Jack Crook): a deterministic phase/weight progression rule,
+        # plus an Isolation Forest over per-entity score vectors.
+        self._progression = {"enabled": True, "min_phases": 2, "min_weight": 4,
+                             "severity": 5, **(rules.get("behavioral_progression") or {})}
+        self._ibad = {"enabled": True, "min_entities": 5, "contamination": 0.15,
+                      "severity": 5, **(rules.get("ibad_outliers") or {})}
 
         # Trusted entities (the user's own gear) are excluded from correlation
         # entirely: your smartwatch at strong RSSI all day is not evidence of
@@ -196,6 +215,8 @@ class CorrelationEngine:
                 "severity": int(d.get("severity", 1)),
                 "entities": [e for e in entities if e not in self._allowlist],
                 "id": d.get("id"),
+                "phase": d.get("phase"),
+                "weight": float(d.get("weight") or 0.0),
             })
 
         cutoff = now - self.window
@@ -206,6 +227,8 @@ class CorrelationEngine:
         meta.extend(self._check_persistence(now))
         meta.extend(self._check_cross_sensor(now))
         meta.extend(self._check_burst(now))
+        meta.extend(self._check_progression(now))
+        meta.extend(self._check_ibad_outliers(now))
         return meta
 
     def _cooled_down(self, key: str, now: float) -> bool:
@@ -314,3 +337,118 @@ class CorrelationEngine:
             f"environment is actively hostile or rapidly changing",
             {"event_count": len(self._events)},
         )]
+
+    def _entity_scores(self) -> Dict[str, Dict[str, Any]]:
+        """Build per-entity score vectors for I-BAD / progression.
+
+        Returns ``entity -> {total_weight, phase_count, detection_count, phases}``.
+        """
+        scored: Dict[str, Dict[str, Any]] = {}
+        for ev in self._events:
+            weight = float(ev.get("weight") or 0.0)
+            phase = ev.get("phase")
+            for ent in ev["entities"]:
+                slot = scored.setdefault(
+                    ent, {"total_weight": 0.0, "phases": set(), "detection_count": 0}
+                )
+                slot["total_weight"] += weight
+                slot["detection_count"] += 1
+                if phase:
+                    slot["phases"].add(phase)
+        out: Dict[str, Dict[str, Any]] = {}
+        for ent, slot in scored.items():
+            out[ent] = {
+                "total_weight": float(slot["total_weight"]),
+                "phase_count": float(len(slot["phases"])),
+                "detection_count": float(slot["detection_count"]),
+                "phases": sorted(slot["phases"]),
+            }
+        return out
+
+    def _check_progression(self, now: float) -> List[Dict[str, Any]]:
+        """Same entity across multiple weighted phases → behavioural progression.
+
+        Jack Crook's I-BAD framing: a detection carries a kill-chain ``phase``
+        and a ``weight``; an entity that accumulates weight across several
+        *distinct* phases (e.g. reconnaissance → tracking → evasion) is showing
+        behavioural progression, not a single stray reading — the strongest
+        TTP-level signal the grid can assemble about one entity.
+        """
+        if not self._progression.get("enabled", True):
+            return []
+        min_phases = int(self._progression.get("min_phases", 2))
+        min_weight = float(self._progression.get("min_weight", 4))
+
+        out = []
+        for ent, stats in self._entity_scores().items():
+            if stats["phase_count"] < min_phases or stats["total_weight"] < min_weight:
+                continue
+            if not self._cooled_down(f"progression:{ent}", now):
+                continue
+            out.append(self._meta(
+                "behavioral_progression",
+                self._progression.get("severity", 5),
+                f"Entity {ent} progressed across {int(stats['phase_count'])} behavioural "
+                f"phases ({', '.join(stats['phases'])}) with cumulative weight "
+                f"{stats['total_weight']:.0f} — coordinated multi-stage behaviour",
+                {"entity": ent, "phases": stats["phases"],
+                 "phase_count": int(stats["phase_count"]),
+                 "total_weight": stats["total_weight"]},
+            ))
+        return out
+
+    def _check_ibad_outliers(self, now: float) -> List[Dict[str, Any]]:
+        """Isolation Forest over per-entity score vectors (I-BAD outlier step).
+
+        Vectors are ``[total_weight, phase_count, detection_count]``. Needs at
+        least ``min_entities`` distinct entities in the window so the
+        unsupervised model has a population to contrast against; skipped when
+        all vectors are identical (no variance to separate).
+        """
+        if not self._ibad.get("enabled", True):
+            return []
+        min_entities = int(self._ibad.get("min_entities", 5))
+        scored = self._entity_scores()
+        if len(scored) < min_entities:
+            return []
+
+        entities = list(scored.keys())
+        X = np.array(
+            [[scored[e]["total_weight"], scored[e]["phase_count"],
+              scored[e]["detection_count"]] for e in entities],
+            dtype=float,
+        )
+        if np.allclose(X, X[0]):
+            return []
+
+        try:
+            Xs = StandardScaler().fit_transform(X)
+            model = IsolationForest(
+                contamination=float(self._ibad.get("contamination", 0.15)),
+                n_estimators=100, random_state=42,
+            )
+            labels = model.fit_predict(Xs)
+        except Exception as e:  # never let a modelling hiccup break detection
+            logger.debug(f"I-BAD Isolation Forest skipped: {e}")
+            return []
+
+        out = []
+        for ent, label in zip(entities, labels):
+            if label != -1:
+                continue
+            if not self._cooled_down(f"ibad:{ent}", now):
+                continue
+            stats = scored[ent]
+            out.append(self._meta(
+                "ibad_outliers",
+                self._ibad.get("severity", 5),
+                f"Entity {ent} is a behavioural outlier vs {len(entities)} entities in "
+                f"the window (weight {stats['total_weight']:.0f}, "
+                f"{int(stats['phase_count'])} phases, {int(stats['detection_count'])} "
+                f"detections) — anomalous relative to the surrounding population",
+                {"entity": ent, "total_weight": stats["total_weight"],
+                 "phase_count": int(stats["phase_count"]),
+                 "detection_count": int(stats["detection_count"]),
+                 "population": len(entities)},
+            ))
+        return out

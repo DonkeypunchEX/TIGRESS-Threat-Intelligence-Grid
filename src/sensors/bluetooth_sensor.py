@@ -6,9 +6,10 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
 from src.sensors.base_sensor import BaseSensor
+from src.utils.known_list import load_known, prune_known, save_known
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -21,19 +22,17 @@ class BluetoothSensor(BaseSensor):
         super().__init__(sensor_id, "bluetooth", config)
         self._interval = config.get("scan_interval", 30)
         self._known_file = Path(config.get("known_devices_file", "data/known_bt_devices.txt"))
-        self._known_addrs: set = self._load_known()
+        # address -> last_seen epoch, pruned by age (see known_list util).
+        self._max_age_days = int(config.get("known_max_age_days", 30))
+        self._known_addrs: Dict[str, float] = prune_known(
+            load_known(self._known_file), self._max_age_days
+        )
         self._thread: Optional[threading.Thread] = None
 
-    def _load_known(self) -> set:
-        """Load previously-seen device addresses from disk."""
-        if not self._known_file.exists():
-            return set()
-        return {line.strip() for line in self._known_file.read_text().splitlines() if line.strip()}
-
     def _save_known(self):
-        """Persist the set of known device addresses to disk."""
-        self._known_file.parent.mkdir(exist_ok=True, parents=True)
-        self._known_file.write_text("\n".join(sorted(self._known_addrs)) + "\n")
+        """Persist the known device addresses to disk (pruned by age)."""
+        self._known_addrs = prune_known(self._known_addrs, self._max_age_days)
+        save_known(self._known_file, self._known_addrs)
 
     def connect(self) -> bool:
         """Check the sensor backend is available; return True on success."""
@@ -93,9 +92,11 @@ class BluetoothSensor(BaseSensor):
             if not isinstance(devices, list):
                 return None
 
-            addrs = {self._address(d) for d in devices if self._address(d)}
-            new_addrs = addrs - self._known_addrs
-            self._known_addrs.update(new_addrs)
+            addrs = {self._address(d).lower() for d in devices if self._address(d)}
+            now = time.time()
+            new_addrs = addrs - set(self._known_addrs)
+            for a in addrs:  # refresh last-seen for all present devices
+                self._known_addrs[a] = now
 
             return {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
